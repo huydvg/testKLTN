@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RFID Log (Light)</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    :root{
+      --bg:#f8fafc; --panel:#e5e7eb; --card:#ffffff; --muted:#475569; --text:#0f172a; --border:#e5e7eb;
+      --ok:#10b981; --warn:#f59e0b; --err:#ef4444; --blue:#2563eb; --pill:#f1f5f9;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;background:var(--bg);color:var(--text);
+      font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+      -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+    }
+    .wrap{max-width:1100px;margin:26px auto;padding:0 16px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+    h1{margin:0;font-weight:700;font-size:clamp(18px,3vw,26px)}
+    .controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    button{
+      background:#ffffff;border:1px solid var(--border);color:var(--text);
+      padding:8px 12px;border-radius:10px;cursor:pointer;box-shadow:0 1px 0 rgba(0,0,0,.03)
+    }
+    button:hover{filter:brightness(1.02)}
+    input,select{
+      background:#ffffff;border:1px solid var(--border);color:var(--text);
+      padding:8px 10px;border-radius:10px
+    }
+    .status{
+      display:flex;align-items:center;gap:8px;padding:6px 10px;
+      border:1px solid var(--border);border-radius:999px;background:var(--pill);color:var(--muted)
+    }
+    .dot{width:10px;height:10px;border-radius:999px;background:#94a3b8}
+    .ok{background:var(--ok)} .warn{background:var(--warn)} .err{background:var(--err)}
+
+    .card{
+      background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;
+      box-shadow:0 10px 30px rgba(15,23,42,.06)
+    }
+    .toolbar{display:flex;gap:10px;align-items:center;padding:12px;border-bottom:1px solid var(--border)}
+    .pill{display:inline-flex;align-items:center;gap:6px;background:var(--pill);border:1px solid var(--border);padding:6px 10px;border-radius:999px;color:var(--muted)}
+
+    table{width:100%;border-collapse:separate;border-spacing:0}
+    thead th{
+      position:sticky;top:0;background:#f1f5f9;border-bottom:1px solid var(--border);
+      color:#0f172a;text-align:left
+    }
+    th,td{padding:12px 12px;border-bottom:1px solid var(--border)}
+    tbody tr:hover{background:#f8fafc}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px;border:1px solid var(--border)}
+    .b-in{background:rgba(16,185,129,.15);color:#059669}
+    .b-out{background:rgba(239,68,68,.12);color:#dc2626}
+
+    .footer{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;color:var(--muted);padding:10px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>📶 RFID Log</h1>
+      <div class="controls">
+        <span class="status"><span id="dot" class="dot"></span><span id="st">Đang khởi tạo…</span></span>
+        <button id="btnClear">Xoá bảng</button>
+        <button id="btnCSV">Xuất CSV</button>
+        <select id="selDevice"><option value="">Tất cả thiết bị</option></select>
+        <input id="search" placeholder="Tìm UID / tên hàng…"/>
+      </div>
+    </header>
+
+    <div class="card">
+      <div class="toolbar">
+        <span class="pill">Broker: <code id="broker" class="mono"></code></span>
+        <span class="pill">Topic: <code id="topic" class="mono"></code></span>
+        <span class="pill">Tổng bản tin: <b id="cnt">0</b></span>
+      </div>
+      <table aria-label="Bảng RFID">
+        <thead>
+          <tr>
+            <th style="width:18%">Thiết bị</th>
+            <th style="width:18%">UID</th>
+            <th>Tên hàng</th>
+            <th style="width:12%">Action</th>
+            <th style="width:22%">Timestamp</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <div class="footer">
+        <small>Giữ tối đa <span class="mono" id="maxRows">200</span> dòng (mới nhất ở trên).</small>
+        <small class="mono">MQTT 3.1.1 / WebSocket TLS</small>
+      </div>
+    </div>
+  </div>
+
+<script>
+  // ====== cấu hình MQTT (giữ nguyên) ======
+  const HOST = 'dcede8aa2beb496b980ed91f6804346e.s1.eu.hivemq.cloud';
+  const PORT = 8884;                  // WebSocket TLS
+  const PATH = '/mqtt';
+  const USERNAME = 'Huy-DTVT17B';
+  const PASSWORD = 'GiaHuy2008@';
+  const SUB_TOPIC = 'coldroom/esp32-RFID/rfid';
+  const url = `wss://${HOST}:${PORT}${PATH}`;
+
+  const st = document.getElementById('st');
+  const dot = document.getElementById('dot');
+  const tbody = document.getElementById('tbody');
+  const broker = document.getElementById('broker');
+  const topic = document.getElementById('topic');
+  const cntEl = document.getElementById('cnt');
+  const selDevice = document.getElementById('selDevice');
+  const search = document.getElementById('search');
+  broker.textContent = `${HOST}:${PORT}${PATH}`; topic.textContent = SUB_TOPIC;
+
+  // ====== state & persistence ======
+  const rows = []; // keep raw objects for filter/search/export
+  const deviceSet = new Set();
+  const MAX_KEEP = 200; // visible + memory cap
+
+  // ---- NEW: localStorage keys
+  const LS_ROWS = 'rfidLogRows.v1';
+  const LS_FILTER = 'rfidLogFilter.v1';
+
+  function setStatus(text, cls){ st.textContent = text; dot.className = 'dot ' + (cls||''); }
+
+  function addDeviceOpt(d){
+    if(!d || deviceSet.has(d)) return;
+    deviceSet.add(d);
+    const o=document.createElement('option'); o.value=d; o.textContent=d;
+    selDevice.appendChild(o);
+  }
+
+  function matchesFilter(item){
+    if (selDevice.value && item.device_id !== selDevice.value) return false;
+    const q = search.value.trim().toLowerCase();
+    if (!q) return true;
+    return (item.uid||'').toLowerCase().includes(q) || (item.name||'').toLowerCase().includes(q);
+  }
+
+  function render(){
+    tbody.innerHTML = '';
+    cntEl.textContent = rows.length;
+    const filtered = rows.filter(matchesFilter);
+    for(const it of filtered){
+      const tr = document.createElement('tr');
+      const badge = it.action === 'IN'
+        ? '<span class="badge b-in">IN</span>'
+        : '<span class="badge b-out">OUT</span>';
+      tr.innerHTML = `
+        <td>${it.device_id||'—'}</td>
+        <td class="mono">${it.uid||'—'}</td>
+        <td>${it.name||'—'}</td>
+        <td>${badge}</td>
+        <td class="mono">${new Date(it.timestamp).toLocaleString('vi-VN')}</td>`;
+      tbody.appendChild(tr);
+    }
+  }
+
+  // ---- NEW: save & load to localStorage (with light debounce)
+  let saveTimer;
+  function saveState(){
+    // Giới hạn để không phình to storage
+    const capped = rows.slice(0, MAX_KEEP);
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(()=>{
+      try{
+        localStorage.setItem(LS_ROWS, JSON.stringify(capped));
+        localStorage.setItem(LS_FILTER, JSON.stringify({
+          sel: selDevice.value || '',
+          q: search.value || ''
+        }));
+      }catch(e){
+        console.warn('Không thể lưu localStorage:', e);
+      }
+    }, 150);
+  }
+
+  function loadState(){
+    try{
+      const savedRows = JSON.parse(localStorage.getItem(LS_ROWS) || '[]');
+      if (Array.isArray(savedRows) && savedRows.length){
+        rows.length = 0;
+        for (const it of savedRows){
+          // kiểm tra tối thiểu đề phòng dữ liệu hỏng
+          if (it && typeof it === 'object' && it.uid && it.action){
+            rows.push(it);
+            addDeviceOpt(it.device_id);
+          }
+        }
+        // đảm bảo giới hạn
+        if (rows.length > MAX_KEEP) rows.length = MAX_KEEP;
+      }
+      const f = JSON.parse(localStorage.getItem(LS_FILTER) || '{}');
+      if (f && typeof f === 'object'){
+        if (typeof f.sel === 'string'){
+          // thêm option nếu chưa có (trường hợp state có device mà option chưa tồn tại)
+          if (f.sel && !deviceSet.has(f.sel)) addDeviceOpt(f.sel);
+          selDevice.value = f.sel || '';
+        }
+        if (typeof f.q === 'string') search.value = f.q;
+      }
+    }catch(e){
+      console.warn('Không thể khôi phục localStorage:', e);
+    }
+  }
+
+  // UI actions
+  document.getElementById('btnClear').addEventListener('click', ()=>{
+    rows.length = 0;
+    // ---- NEW: clear storage
+    localStorage.removeItem(LS_ROWS);
+    localStorage.removeItem(LS_FILTER);
+    // reset device list (giữ "Tất cả thiết bị")
+    deviceSet.clear();
+    while (selDevice.options.length > 1) selDevice.remove(1);
+    search.value = '';
+    render();
+  });
+
+  document.getElementById('btnCSV').addEventListener('click', ()=>{
+    const data = rows.filter(matchesFilter);
+    const hdr = ['device_id','uid','name','action','timestamp'];
+    const csv = [hdr.join(',')]
+      .concat(data.map(r => hdr.map(k => '"' + String(r[k] ?? '').replaceAll('"','""') + '"').join(',')))
+      .join('\n');
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'rfid-log.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  selDevice.addEventListener('change', ()=>{
+    render();
+    saveState(); // ---- NEW: lưu filter
+  });
+
+  search.addEventListener('input', ()=>{
+    render();
+    saveState(); // ---- NEW: lưu filter
+  });
+
+  // ====== kết nối MQTT (kiểu đã chạy được) ======
+  const client = mqtt.connect(url, {
+    clientId: 'webapp-' + Math.random().toString(16).slice(2),
+    username: USERNAME,
+    password: PASSWORD,
+    clean: true,
+    reconnectPeriod: 2000,
+    connectTimeout: 15000,
+    keepalive: 60,
+    protocolVersion: 4, // MQTT 3.1.1
+  });
+
+  client.on('connect', () => {
+    setStatus('Đã kết nối  ' + HOST, 'ok');
+    client.subscribe(SUB_TOPIC, { qos: 0 });
+  });
+  client.on('reconnect', () => setStatus('Đang thử kết nối lại…', 'warn'));
+  client.on('close', () => setStatus('Mất kết nối', 'err'));
+  client.on('error', e => setStatus('Lỗi: ' + e.message, 'err'));
+
+  // ====== nhận bản tin và thêm dòng vào bảng ======
+  client.on('message', (topic, payload) => {
+    if (topic !== SUB_TOPIC) return;
+    try {
+      const msg = JSON.parse(payload.toString());
+      const item = {
+        device_id: msg.device_id || '',
+        uid: (msg.uid || '').toUpperCase(),
+        name: msg.name || '',
+        action: (msg.action || '').toUpperCase(),
+        timestamp: msg.timestamp || new Date().toISOString()
+      };
+      if (!item.uid || !item.action) return;
+      addDeviceOpt(item.device_id);
+      rows.unshift(item); // newest first
+      if (rows.length > MAX_KEEP) rows.length = MAX_KEEP; // trim
+      saveState(); // ---- NEW: lưu ngay khi có dữ liệu mới
+      render();
+    } catch (e) {
+      console.warn('Không parse được JSON:', payload.toString());
+    }
+  });
+
+  // ---- NEW: khôi phục trước khi render lần đầu
+  loadState();
+  render();
+  // đảm bảo sau lần render đầu, lưu lại filter hiện có (nếu có)
+  saveState();
+</script>
+</body>
+</html>
