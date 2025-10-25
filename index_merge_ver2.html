@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hệ thống kho lạnh – RFID + Room1 + Room2 + Room3</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    :root{
+      --bg:#ffffff; --panel:#f3f4f6; --card:#ffffff; --muted:#475569; --text:#0f172a; --border:#e5e7eb;
+      --ok:#10b981; --warn:#f59e0b; --err:#ef4444; --blue:#2563eb; --pill:#f8fafc; --primary:#0ea5e9; --primary-weak:#e0f2fe;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+    .container{max-width:1280px;margin:26px auto;padding:0 16px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+    h1{margin:0;font-weight:700;font-size:clamp(18px,3vw,26px)}
+
+    .pill{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;border:1px solid var(--border);background:var(--pill);color:var(--muted)}
+    .dot{width:10px;height:10px;border-radius:999px;background:#64748b}
+    .ok{background:var(--ok)} .warn{background:var(--warn)} .err{background:var(--err)}
+
+    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.12);margin-top:10px}
+    .toolbar{display:flex;gap:10px;align-items:center;padding:12px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+
+    .grid-page{display:grid;grid-template-columns:1fr;gap:14px}
+    @media(min-width:1000px){
+      .grid-page{grid-template-columns:1fr 1fr}
+      .rfid-wrap{grid-column:1/-1}
+    }
+
+    table{width:100%;border-collapse:separate;border-spacing:0}
+    thead th{position:sticky;top:0;background:#f8fafc;border-bottom:1px solid var(--border);color:var(--muted);text-align:left}
+    th,td{padding:12px;border-bottom:1px solid var(--border)}
+    tbody tr:hover{ background:#f1f5f9; }
+
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .badge{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;font-size:12px;border:1px solid var(--border);background:var(--pill);color:var(--muted)}
+    .b-in{background:rgba(16,185,129,.15);color:#22c55e}
+    .b-out{background:rgba(239,68,68,.12);color:#ef4444}
+    .badge.on .dot{background:var(--ok)}
+    .badge.off .dot{background:var(--err)}
+    .badge.open .dot{background:var(--warn)}
+    .badge.closed .dot{background:var(--ok)}
+
+    .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    button{background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:10px;cursor:pointer;box-shadow:0 1px 0 rgba(0,0,0,.08)}
+    button:hover{filter:brightness(1.07)}
+    button.danger{background:#ef4444;color:#fff;border-color:#ef4444}
+    button.primary{background:var(--primary);color:#0b1220;border-color:var(--primary)}
+    input,select{background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:10px}
+
+    .grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+    .relayCard{border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--panel);display:flex;flex-direction:column;gap:8px}
+    .relayHead{display:flex;align-items:center;justify-content:space-between}
+
+    .footer{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;color:var(--muted);padding:10px}
+    .titleRoom{font-weight:700;font-size:16px}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Hệ thống giám sát phòng kho lạnh</h1>
+      <div class="pill"><span id="hdrDot" class="dot"></span><span id="hdrSt">Đang khởi tạo…</span></div>
+    </header>
+
+    <div class="grid-page">
+      <!-- RFID -->
+      <div class="card rfid-wrap">
+        <div class="toolbar">
+          <span class="titleRoom">📶 RFID – Nhật ký</span>
+          <span class="pill">Broker: <code id="rfidBroker" class="mono"></code></span>
+          <span class="pill">Topic: <code id="rfidTopic" class="mono"></code></span>
+          <span class="pill">Tổng bản tin: <b id="rfidCnt">0</b></span>
+          <button id="btnRFIDClear">Xoá bảng</button>
+          <button id="btnRFIDClearScreen" title="Chỉ xoá phần hiển thị hiện tại, không xoá dữ liệu đã lưu">Xoá chỉ trên màn hình</button>
+          <button id="btnRFIDRestore" class="primary" title="Vẽ lại từ dữ liệu đã lưu">Khôi phục hiển thị</button>
+          <button id="btnRFIDCSV" class="primary">Xuất CSV</button>
+          <select id="rfidSelDevice"><option value="">Tất cả thiết bị</option></select>
+          <input id="rfidSearch" placeholder="Tìm UID / tên hàng…" />
+        </div>
+        <table aria-label="Bảng RFID">
+          <thead>
+            <tr>
+              <th style="width:18%">Thiết bị</th>
+              <th style="width:18%">UID</th>
+              <th>Tên hàng</th>
+              <th style="width:12%">Action</th>
+              <th style="width:22%">Timestamp</th>
+            </tr>
+          </thead>
+          <tbody id="rfidTbody"></tbody>
+        </table>
+        <div class="footer">
+          <small>Giữ tối đa <span class="mono" id="rfidMax">200</span> dòng (mới nhất ở trên).</small>
+          <small class="mono">MQTT 3.1.1 / WebSocket TLS</small>
+        </div>
+      </div>
+
+      <!-- ROOM CARDS -->
+      <div id="room1Card" class="card"></div>
+      <div id="room2Card" class="card"></div>
+      <div id="room3Card" class="card"></div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  // ====== MQTT CONFIG ======
+  const HOST = 'dcede8aa2beb496b980ed91f6804346e.s1.eu.hivemq.cloud';
+  const PORT = 8884; // TLS WebSocket
+  const PATH = '/mqtt';
+  const USERNAME = 'Huy-DTVT17B';
+  const PASSWORD = 'GiaHuy2008@';
+  const WS_URL = `wss://${HOST}:${PORT}${PATH}`;
+
+  // ====== TOPICS ======
+  const TOPIC_RFID   = 'coldroom/esp32-RFID/rfid';
+  const SUB_TELE_ALL = 'coldroom/+/DHT22'; // nhận tất cả phòng
+  const SUB_STATE_ALL= 'coldroom/+/out1';
+  const PUB_OF = (room)=>`coldroom/${room}/client1`;
+
+  // ====== HEADER ======
+  const hdrDot = document.getElementById('hdrDot');
+  const hdrSt  = document.getElementById('hdrSt');
+  function setHdr(text, cls){ hdrSt.textContent = text; hdrDot.className = 'dot ' + (cls||''); }
+
+  // ====== INIT LABELS ======
+  document.getElementById('rfidBroker').textContent = `${HOST}:${PORT}${PATH}`;
+  document.getElementById('rfidTopic').textContent  = TOPIC_RFID;
+
+  // ====== MQTT client ======
+  setHdr('Đang kết nối…','warn');
+  const client = mqtt.connect(WS_URL, {
+    clientId: 'webapp-' + Math.random().toString(16).slice(2),
+    username: USERNAME, password: PASSWORD,
+    clean: true, reconnectPeriod: 2000, connectTimeout: 15000, keepalive: 60, protocolVersion: 4,
+  });
+
+  client.on('connect', () => {
+    setHdr('Đã kết nối','ok');
+    client.subscribe([TOPIC_RFID, SUB_TELE_ALL, SUB_STATE_ALL], { qos: 0 }, (err) => {
+      if(err) setHdr('Sub lỗi: ' + err.message, 'err');
+      else {
+        // ping yêu cầu state cho cả 3 phòng
+        ['room1','room2','room3'].forEach(r=>{
+          try { client.publish(PUB_OF(r), JSON.stringify({getState:1}), {qos:0, retain:false}); } catch {}
+        });
+      }
+    });
+  });
+  client.on('reconnect', () => setHdr('Đang thử kết nối lại…','warn'));
+  client.on('close', () => setHdr('Mất kết nối','err'));
+  client.on('error', (e) => setHdr('Lỗi: ' + (e?.message || e), 'err'));
+
+  // ====== Utils ======
+  const debounce = (fn, ms=180)=>{ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; };
+  const safeDate = (iso)=>{ try{ return new Date(iso).toLocaleString('vi-VN'); }catch{ return new Date().toLocaleString('vi-VN'); } };
+  const getRoomFromTopic = (topic)=>{ const p=topic.split('/'); return p.length>=3 ? p[1] : ''; };
+
+  // ====== RFID MODULE ======
+  (function(){
+    const tbody = document.getElementById('rfidTbody');
+    const cntEl = document.getElementById('rfidCnt');
+    const selDevice = document.getElementById('rfidSelDevice');
+    const search = document.getElementById('rfidSearch');
+    const rows = [];
+    const deviceSet = new Set();
+    const MAX_KEEP = 200;
+    document.getElementById('rfidMax').textContent = MAX_KEEP;
+    const LS_ROWS = 'rfidLogRows.v1';
+    const LS_FILTER = 'rfidLogFilter.v1';
+
+    function addDeviceOpt(d){
+      if(!d || deviceSet.has(d)) return;
+      deviceSet.add(d);
+      const o=document.createElement('option'); o.value=d; o.textContent=d;
+      selDevice.appendChild(o);
+    }
+    function matchesFilter(item){
+      if (selDevice.value && item.device_id !== selDevice.value) return false;
+      const q = search.value.trim().toLowerCase();
+      if (!q) return true;
+      return (item.uid||'').toLowerCase().includes(q) || (item.name||'').toLowerCase().includes(q);
+    }
+    function render(){
+      tbody.innerHTML = '';
+      cntEl.textContent = rows.length;
+      const filtered = rows.filter(matchesFilter);
+      for(const it of filtered){
+        const tr = document.createElement('tr');
+        const badge = it.action === 'IN' ? '<span class="badge b-in">IN</span>' : '<span class="badge b-out">OUT</span>';
+        tr.innerHTML = `
+          <td>${it.device_id||'—'}</td>
+          <td class="mono">${it.uid||'—'}</td>
+          <td>${it.name||'—'}</td>
+          <td>${badge}</td>
+          <td class="mono">${safeDate(it.timestamp)}</td>`;
+        tbody.appendChild(tr);
+      }
+    }
+    let saveTimer;
+    function saveState(){
+      const capped = rows.slice(0, MAX_KEEP);
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(()=>{
+        try{
+          localStorage.setItem(LS_ROWS, JSON.stringify(capped));
+          localStorage.setItem(LS_FILTER, JSON.stringify({ sel: selDevice.value || '', q: search.value || '' }));
+        }catch(e){ console.warn('Không thể lưu localStorage:', e); }
+      }, 150);
+    }
+    function loadState(){
+      try{
+        const savedRows = JSON.parse(localStorage.getItem(LS_ROWS) || '[]');
+        if (Array.isArray(savedRows) && savedRows.length){
+          rows.length = 0;
+          for (const it of savedRows){
+            if (it && typeof it === 'object'){
+              rows.push(it); addDeviceOpt(it.device_id);
+            }
+          }
+          if (rows.length > MAX_KEEP) rows.length = MAX_KEEP;
+        }
+        const f = JSON.parse(localStorage.getItem(LS_FILTER) || '{}');
+        if (f && typeof f === 'object'){
+          if (typeof f.sel === 'string'){ if (f.sel && !deviceSet.has(f.sel)) addDeviceOpt(f.sel); selDevice.value = f.sel || ''; }
+          if (typeof f.q === 'string') search.value = f.q;
+        }
+      }catch(e){ console.warn('Không thể khôi phục localStorage:', e); }
+    }
+
+    document.getElementById('btnRFIDClear').addEventListener('click', ()=>{
+      rows.length = 0;
+      try{ localStorage.removeItem(LS_ROWS); localStorage.removeItem(LS_FILTER); }catch{}
+      deviceSet.clear();
+      while (selDevice.options.length > 1) selDevice.remove(1);
+      search.value = '';
+      render();
+      setHdr('Đã xoá toàn bộ bảng & localStorage', 'warn');
+    });
+    document.getElementById('btnRFIDClearScreen').addEventListener('click', ()=>{
+      tbody.innerHTML = '';
+      setHdr('Đã xoá HIỂN THỊ bảng (dữ liệu vẫn được giữ)', 'warn');
+    });
+    document.getElementById('btnRFIDRestore').addEventListener('click', ()=>{
+      render();
+      setHdr('Đã khôi phục hiển thị bảng từ dữ liệu đã lưu', 'ok');
+    });
+    document.getElementById('btnRFIDCSV').addEventListener('click', ()=>{
+      const data = rows.filter(matchesFilter);
+      const hdr = ['device_id','uid','name','action','timestamp'];
+      const csv = [hdr.join(',')].concat(data.map(r => hdr.map(k => '"' + String(r[k] ?? '').replaceAll('"','""') + '"').join(','))).join('\n');
+      const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+      const ts = new Date().toISOString().replaceAll(':','-').split('.')[0];
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `rfid-log_${ts}.csv`; a.click(); URL.revokeObjectURL(a.href);
+    });
+
+    selDevice.addEventListener('change', ()=>{ render(); saveState(); });
+    search.addEventListener('input', debounce(()=>{ render(); saveState(); }, 160));
+
+    // Hook MQTT
+    client.on('message', (topic, payload) => {
+      if (topic !== TOPIC_RFID) return;
+      const msg = payload.toString();
+      try{
+        const m = JSON.parse(msg);
+        const item = {
+          device_id: m.device_id || '',
+          uid: String(m.uid||'').toUpperCase(),
+          name: m.name || '',
+          action: String(m.action||'').toUpperCase(),
+          timestamp: m.timestamp || new Date().toISOString()
+        };
+        if (!item.uid || !item.action) return;
+        addDeviceOpt(item.device_id);
+        rows.unshift(item);
+        if (rows.length > MAX_KEEP) rows.length = MAX_KEEP;
+        saveState();
+        render();
+      }catch(e){ console.warn('Không parse được RFID JSON:', msg); }
+    });
+
+    loadState(); render(); saveState();
+  })();
+
+  // ====== ROOM PANEL FACTORY ======
+  function createRoomCard(roomId, mountEl){
+    // build skeleton
+    mountEl.innerHTML = `
+      <div class="toolbar" style="justify-content:space-between">
+        <div class="controls">
+          <span class="titleRoom">🌡️ ${roomId.toUpperCase()}</span>
+          <span class="pill">Broker: <code class="mono">${HOST}:${PORT}${PATH}</code></span>
+          <span class="pill">Sub: <code class="mono">coldroom/${roomId}/DHT22</code></span>
+          <span class="pill">State: <code class="mono">coldroom/${roomId}/out1</code></span>
+          <span class="pill">Pub: <code class="mono">coldroom/${roomId}/client1</code></span>
+        </div>
+        <div class="controls">
+          <div class="badge" data-door><span class="dot"></span><span>Door: —</span></div>
+          <div class="badge" data-sum><span class="dot"></span><span>Relays: —</span></div>
+          <button class="primary"  data-all-on  type="button">All ON</button>
+          <button class="danger"   data-all-off type="button">All OFF</button>
+        </div>
+      </div>
+
+      <div class="body" style="padding:12px;display:flex;flex-direction:column;gap:10px">
+        <div class="grid4" data-grid></div>
+
+        <div class="controls" style="border-top:1px solid var(--border);padding-top:10px">
+          <span class="pill">History points:
+            <input data-hist-max type="number" value="200" min="50" max="2000" style="width:90px;margin-left:6px">
+          </span>
+          <button data-hist-clear>Xoá biểu đồ</button>
+        </div>
+
+        <div style="height:240px"><canvas data-chart></canvas></div>
+
+        <table aria-label="Bảng nhiệt độ và độ ẩm">
+          <thead><tr><th>Nhiệt độ (°C)</th><th>Độ ẩm (%RH)</th></tr></thead>
+          <tbody data-tbody></tbody>
+        </table>
+      </div>
+    `;
+
+    // refs
+    const grid = mountEl.querySelector('[data-grid]');
+    const doorBadge = mountEl.querySelector('[data-door]');
+    const doorText  = doorBadge.querySelector('span:last-child');
+    const sumBadge  = mountEl.querySelector('[data-sum]');
+    const sumText   = sumBadge.querySelector('span:last-child');
+    const histMaxEl = mountEl.querySelector('[data-hist-max]');
+    const histClear = mountEl.querySelector('[data-hist-clear]');
+    const tbody     = mountEl.querySelector('[data-tbody]');
+    const canvas    = mountEl.querySelector('[data-chart]');
+
+    // relay UI
+    const relayKeys = ['r1','r2','r3','r4'];
+    const relayUI = {};
+    relayKeys.forEach((k, i)=>{
+      const c = document.createElement('div');
+      c.className = 'relayCard';
+      c.innerHTML = `
+        <div class="relayHead">
+          <strong>Relay ${i+1}</strong>
+          <div class="badge" id="${roomId}-${k}-b"><span class="dot"></span><span id="${roomId}-${k}-t">${k.toUpperCase()}: —</span></div>
+        </div>
+        <div class="controls">
+          <button class="primary"  id="${roomId}-${k}-on"  type="button">ON</button>
+          <button class="danger"   id="${roomId}-${k}-off" type="button">OFF</button>
+        </div>
+      `;
+      grid.appendChild(c);
+      relayUI[k] = {
+        badgeEl: c.querySelector(`#${roomId}-${k}-b`),
+        textEl:  c.querySelector(`#${roomId}-${k}-t`),
+        onBtn:   c.querySelector(`#${roomId}-${k}-on`),
+        offBtn:  c.querySelector(`#${roomId}-${k}-off`),
+      };
+    });
+
+    // publisher
+    const publish = (obj)=>{
+      const payload = JSON.stringify(obj);
+      if (client && client.connected){
+        client.publish(PUB_OF(roomId), payload, {qos:0, retain:false});
+        setHdr(`Đã gửi ${payload} → ${PUB_OF(roomId)}`, 'ok');
+      } else setHdr('Chưa kết nối, không thể gửi', 'err');
+    };
+
+    mountEl.querySelector('[data-all-on]').addEventListener('click', ()=> publish({r1:1,r2:1,r3:1,r4:1}));
+    mountEl.querySelector('[data-all-off]').addEventListener('click',()=> publish({r1:0,r2:0,r3:0,r4:0}));
+    relayKeys.forEach(k=>{
+      relayUI[k].onBtn.addEventListener('click',  ()=> publish({[k]:1}));
+      relayUI[k].offBtn.addEventListener('click', ()=> publish({[k]:0}));
+    });
+
+    // chart + history per room
+    const LS_HIST = `roomTH.hist.v1.${roomId}`;
+    const LS_LIMIT= `roomTH.hist.limit.${roomId}`;
+    const hist = { labels:[], t:[], h:[] };
+
+    // load saved
+    try{
+      const pack = JSON.parse(localStorage.getItem(LS_HIST)||'null');
+      if (pack && Array.isArray(pack.labels)){ hist.labels = pack.labels; hist.t = pack.t||[]; hist.h = pack.h||[]; }
+      const savedL = Number(localStorage.getItem(LS_LIMIT));
+      if (Number.isFinite(savedL)) histMaxEl.value = Math.max(50, Math.min(2000, savedL));
+    }catch{}
+
+    const chart = new Chart(canvas.getContext('2d'), {
+      type: 'line',
+      data: { labels: hist.labels, datasets: [
+        { label:'Nhiệt độ (°C)', data: hist.t, tension:.25, pointRadius:0 },
+        { label:'Độ ẩm (%RH)',  data: hist.h, tension:.25, pointRadius:0 }
+      ]},
+      options: {
+        responsive:true, maintainAspectRatio:false,
+        interaction:{mode:'nearest',intersect:false},
+        plugins:{ legend:{ labels:{ color:getComputedStyle(document.documentElement).getPropertyValue('--text') } } },
+        scales:{
+          x:{ ticks:{ autoSkip:true, maxRotation:0, color:getComputedStyle(document.documentElement).getPropertyValue('--muted') },
+              grid:{ color:'rgba(148,163,184,.15)' } },
+          y:{ ticks:{ color:getComputedStyle(document.documentElement).getPropertyValue('--muted') },
+              grid:{ color:'rgba(148,163,184,.12)' } }
+        }
+      }
+    });
+
+    function saveHist(){
+      try{
+        localStorage.setItem(LS_HIST, JSON.stringify(hist));
+        localStorage.setItem(LS_LIMIT, String(limit()));
+      }catch(e){ console.warn('Không lưu history', e); }
+    }
+    const limit = ()=> Math.max(50, Math.min(2000, Number(histMaxEl.value)||200));
+    function appendTH(t,h){
+      const L = limit();
+      hist.labels.push(new Date().toLocaleTimeString('vi-VN',{hour12:false}));
+      hist.t.push(Number(t)); hist.h.push(Number(h));
+      while(hist.labels.length > L){ hist.labels.shift(); hist.t.shift(); hist.h.shift(); }
+      chart.update('none'); saveHist();
+    }
+    histClear.addEventListener('click', ()=>{
+      hist.labels.length=0; hist.t.length=0; hist.h.length=0; chart.update('none');
+      try{ localStorage.removeItem(LS_HIST); }catch{}
+      setHdr(`Đã xoá lịch sử biểu đồ của ${roomId}`, 'warn');
+    });
+    histMaxEl.addEventListener('change', ()=>{
+      const L = limit();
+      while(hist.labels.length > L){ hist.labels.shift(); hist.t.shift(); hist.h.shift(); }
+      chart.update('none'); saveHist();
+    });
+
+    // state cache
+    const state = { door:null, r:{r1:null,r2:null,r3:null,r4:null} };
+
+    function setDoor(val01){
+      const open = Number(val01)===1;
+      doorBadge.classList.remove('open','closed');
+      doorBadge.classList.add(open ? 'open' : 'closed');
+      doorText.textContent = 'Door: ' + (open ? 'OPEN' : 'CLOSED');
+      state.door = open ? 1 : 0;
+    }
+    function setRelay(key, val01){
+      const on = Number(val01)===1;
+      const ui = relayUI[key];
+      if (ui){
+        ui.badgeEl.classList.remove('on','off');
+        ui.badgeEl.classList.add(on ? 'on' : 'off');
+        ui.textEl.textContent = key.toUpperCase() + ': ' + (on ? 'ON' : 'OFF');
+      }
+      state.r[key] = on ? 1 : 0;
+      const vals = Object.values(state.r).filter(v=>v!==null);
+      if (vals.length){
+        const onCount = vals.reduce((a,b)=>a+(b?1:0),0);
+        sumText.textContent = `Relays: ${onCount}/${vals.length} ON`;
+        sumBadge.classList.remove('on','off');
+        if (onCount===vals.length) sumBadge.classList.add('on');
+        else if (onCount===0)      sumBadge.classList.add('off');
+      }
+    }
+
+    // API cho router
+    return {
+      roomId,
+      updateState(msg){
+        try{
+          const o = JSON.parse(msg);
+          if (o.relay !== undefined) setRelay('r1', o.relay===true?1: o.relay===false?0:Number(o.relay));
+          ['r1','r2','r3','r4'].forEach(k=>{
+            if (o[k] !== undefined){
+              const v = o[k]===true?1:o[k]===false?0:Number(o[k]);
+              if (v===0||v===1) setRelay(k,v);
+            }
+          });
+          const arr = Array.isArray(o.relays) ? o.relays : Array.isArray(o.relayArray) ? o.relayArray : null;
+          if (arr && arr.length){
+            for(let i=0;i<Math.min(arr.length,4);i++){
+              const v = arr[i]===true?1:arr[i]===false?0:Number(arr[i]);
+              if (v===0||v===1) setRelay(relayKeys[i], v);
+            }
+          }
+          if (o.door !== undefined){
+            const dv = o.door===true?1:o.door===false?0:Number(o.door);
+            if (dv===0||dv===1) setDoor(dv);
+          }
+        }catch(e){ console.warn('STATE JSON error', e, msg); }
+      },
+      updateTelemetry(msg){
+        let t=null,h=null;
+        try{
+          const o = JSON.parse(msg);
+          t = (o.temp ?? o.temperature ?? o.T ?? null);
+          h = (o.humi ?? o.humidity ?? o.H ?? null);
+        }catch(_){
+          const parts = String(msg).split(/[;,\s]+/).filter(Boolean);
+          if(parts.length>=2){ t=parseFloat(parts[0]); h=parseFloat(parts[1]); }
+        }
+        if(Number.isFinite(t) && Number.isFinite(h)){
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${Number(t).toFixed(1)}</td><td>${Number(h).toFixed(1)}</td>`;
+          tbody.replaceChildren(tr);
+          appendTH(t,h);
+        }
+      }
+    };
+  }
+
+  // Tạo 3 panel phòng
+  const rooms = {
+    room1: createRoomCard('room1', document.getElementById('room1Card')),
+    room2: createRoomCard('room2', document.getElementById('room2Card')),
+    room3: createRoomCard('room3', document.getElementById('room3Card')),
+  };
+
+  // ====== Router MQTT cho tất cả phòng + RFID ======
+  client.on('message', (topic, payload) => {
+    const msg = payload.toString();
+    if (topic === TOPIC_RFID) return; // đã xử lý trong RFID module
+    if (!topic.startsWith('coldroom/')) return;
+    const room = getRoomFromTopic(topic);
+    const panel = rooms[room];
+    if (!panel) return;
+    if (topic.endsWith('/out1'))   return panel.updateState(msg);
+    if (topic.endsWith('/DHT22'))  return panel.updateTelemetry(msg);
+  });
+
+  // ====== Cảnh báo bảo mật ======
+  console.warn('⚠️ USERNAME/PASSWORD MQTT nằm ở client-side. Nên cân nhắc proxy hoặc token tạm khi deploy công khai.');
+})();
+</script>
+</body>
+</html>
