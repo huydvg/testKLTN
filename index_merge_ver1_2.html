@@ -1,0 +1,844 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hệ thống kho lạnh – RFID & 3 Rooms</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    :root{
+      --bg:#ffffff; --panel:#f3f4f6; --card:#ffffff; --muted:#475569; --text:#0f172a; --border:#e5e7eb;
+      --ok:#10b981; --warn:#f59e0b; --err:#ef4444; --blue:#2563eb; --pill:#f8fafc; --primary:#0ea5e9; --primary-weak:#e0f2fe;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+    .container{max-width:1100px;margin:26px auto;padding:0 16px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+    h1{margin:0;font-weight:700;font-size:clamp(18px,3vw,26px)}
+
+    .pill{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;border:1px solid var(--border);background:var(--pill);color:var(--muted)}
+    .dot{width:10px;height:10px;border-radius:999px;background:#64748b}
+    .ok{background:var(--ok)} .warn{background:var(--warn)} .err{background:var(--err)}
+
+    .tabs{display:flex;gap:8px;flex-wrap:wrap}
+    .tabbtn{border:1px solid var(--border);background:var(--card);color:var(--text);padding:8px 12px;border-radius:10px;cursor:pointer;font-weight:600}
+    .tabbtn.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+
+    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.15);margin-top:10px}
+    .toolbar{display:flex;gap:10px;align-items:center;padding:12px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+
+    table{width:100%;border-collapse:separate;border-spacing:0}
+    thead th{position:sticky;top:0;background:#f8fafc;border-bottom:1px solid var(--border);color:var(--muted);text-align:left}
+    th,td{padding:12px;border-bottom:1px solid var(--border)}
+    tbody tr:hover{ background:#f1f5f9; }
+
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .badge{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;font-size:12px;border:1px solid var(--border);background:var(--pill);color:var(--muted)}
+    .b-in{background:rgba(16,185,129,.15);color:#22c55e}
+    .b-out{background:rgba(239,68,68,.12);color:#ef4444}
+    .badge.on .dot{background:var(--ok)}
+    .badge.off .dot{background:var(--err)}
+    .badge.open .dot{background:var(--warn)}
+    .badge.closed .dot{background:var(--ok)}
+
+    .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    button{background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:10px;cursor:pointer;box-shadow:0 1px 0 rgba(0,0,0,.08)}
+    button:hover{filter:brightness(1.07)}
+    button.danger{background:#ef4444;color:#fff;border-color:#ef4444}
+    button.primary{background:var(--primary);color:#0b1220;border-color:#ef4444}
+    input,select{background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:10px}
+
+    .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:10px}
+    .relayCard{border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--panel);display:flex;flex-direction:column;gap:8px}
+    .relayHead{display:flex;align-items:center;justify-content:space-between}
+
+    .section{display:none}
+    .section.active{display:block}
+
+    .footer{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;color:var(--muted);padding:10px}
+    .roomtabs{display:flex;gap:6px;align-items:center}
+    .roomtabs .roombtn{border:1px solid var(--border);background:var(--card);padding:6px 10px;border-radius:10px;cursor:pointer}
+    .roomtabs .roombtn.active{background:var(--blue);color:#fff;border-color:var(--blue)}
+
+    /* === Peltier Slider === */
+    .peltierBar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px;border-top:1px solid var(--border)}
+    .range{appearance:none;height:8px;border-radius:999px;background:#e5e7eb;outline:none;width:260px}
+    .range::-webkit-slider-thumb{appearance:none;width:18px;height:18px;border-radius:50%;background:var(--primary);border:2px solid #0ea5e955;cursor:pointer}
+    .range::-moz-range-thumb{width:18px;height:18px;border:0;border-radius:50%;background:var(--primary);cursor:pointer}
+    .modebtn{border:1px solid var(--border);background:var(--card);padding:6px 10px;border-radius:10px;cursor:pointer}
+    .modebtn.active{background:var(--blue);color:#fff;border-color:var(--blue)}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Hệ thống giám sát phòng kho lạnh</h1>
+      <div class="pill"><span id="hdrDot" class="dot"></span><span id="hdrSt">Đang khởi tạo…</span></div>
+    </header>
+
+    <div class="tabs">
+      <button id="tabRFIDBtn"  class="tabbtn">📶 RFID Nhật ký</button>
+      <button id="tabRoomBtn"  class="tabbtn">🌡️ Phòng (3 rooms)</button>
+    </div>
+
+    <!-- ===== RFID SECTION ===== -->
+    <section id="tabRFID" class="section">
+      <div class="card">
+        <div class="toolbar">
+          <span class="pill">Broker: <code id="rfidBroker" class="mono"></code></span>
+          <span class="pill">Topic: <code id="rfidTopic" class="mono"></code></span>
+          <span class="pill">Tổng bản tin: <b id="rfidCnt">0</b></span>
+          <button id="btnRFIDClear">Xoá bảng</button>
+          <button id="btnRFIDClearScreen" title="Chỉ xoá phần hiển thị hiện tại, không xoá dữ liệu đã lưu">Xoá chỉ trên màn hình</button>
+          <button id="btnRFIDRestore" class="primary" title="Vẽ lại từ dữ liệu đã lưu">Khôi phục hiển thị</button>
+          <button id="btnRFIDCSV" class="primary">Xuất CSV</button>
+          <select id="rfidSelDevice"><option value="">Tất cả thiết bị</option></select>
+          <input id="rfidSearch" placeholder="Tìm UID / tên hàng…"/>
+        </div>
+        <table aria-label="Bảng RFID">
+          <thead>
+            <tr>
+              <th style="width:18%">Thiết bị</th>
+              <th style="width:18%">UID</th>
+              <th>Tên hàng</th>
+              <th style="width:12%">Action</th>
+              <th style="width:22%">Timestamp</th>
+            </tr>
+          </thead>
+          <tbody id="rfidTbody"></tbody>
+        </table>
+        <div class="footer">
+          <small>Giữ tối đa <span class="mono" id="rfidMax">200</span> dòng (mới nhất ở trên).</small>
+          <small class="mono">MQTT 3.1.1 / WebSocket TLS</small>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== ROOM(S) SECTION ===== -->
+    <section id="tabRoom" class="section">
+      <div class="card">
+        <div class="toolbar" style="justify-content:space-between">
+          <div class="controls">
+            <span class="pill">Broker: <code id="roomBroker" class="mono"></code></span>
+            <span class="pill">Sub: <code id="roomSub" class="mono"></code></span>
+            <span class="pill">State: <code id="roomState" class="mono"></code></span>
+            <span class="pill">Pub: <code id="roomPub" class="mono"></code></span>
+          </div>
+          <div class="controls">
+            <div class="roomtabs">
+              <span>Phòng:</span>
+              <button class="roombtn active" data-room="room1">Room1</button>
+              <button class="roombtn" data-room="room2">Room2</button>
+              <button class="roombtn" data-room="room3">Room3</button>
+            </div>
+            <div id="doorBadge" class="badge" title="Trạng thái cửa"><span class="dot"></span><span id="doorText">Door: —</span></div>
+            <div id="sumBadge" class="badge" title="Tổng hợp 4 relay"><span class="dot"></span><span id="sumText">Relays: —</span></div>
+            <button id="allOn"  class="primary"  type="button" title='Gửi {"r1":1,"r2":1,"r3":1,"r4":1}'>All ON</button>
+            <button id="allOff" class="danger"   type="button" title='Gửi {"r1":0,"r2":0,"r3":0,"r4":0}'>All OFF</button>
+          </div>
+        </div>
+
+        <div class="grid" id="relayGrid"></div>
+
+        <!-- ===== PELTIER CONTROL (no POT) ===== -->
+        <div class="peltierBar">
+          <span class="pill">Peltier CMD: <code class="mono" id="pelCmdTopic"></code></span>
+          <span class="pill">State: <code class="mono" id="pelStateTopic"></code></span>
+          <span class="pill">Tele: <code class="mono" id="pelTeleTopic"></code></span>
+
+          <label class="pill" title="Bật/tắt đầu ra BTS7960">
+            <input type="checkbox" id="peltierEnable">
+            Enable
+          </label>
+
+          <div class="controls">
+            <button id="modeManual" class="modebtn" type="button" title='{"mode":"manual"}'>MANUAL</button>
+            <button id="modeOff" class="modebtn danger" type="button" title='{"mode":"off"}'>OFF</button>
+          </div>
+
+          <input id="peltierSlider" class="range" type="range" min="0" max="255" step="1" value="0" title="Duty 0..255 (manual)"/>
+
+          <span class="pill">Duty: <b id="pelDutyLbl">0</b>/255 (<b id="pelPctLbl">0</b>%)</span>
+          <span class="pill">Mode: <b id="pelModeLbl">—</b></span>
+        </div>
+
+        <div class="toolbar" style="justify-content:flex-start;gap:8px;border-top:1px solid var(--border)">
+          <span class="pill">History points: <input id="histMax" type="number" value="200" min="50" max="2000" style="width:90px"></span>
+          <button id="histClear">Xoá biểu đồ</button>
+        </div>
+        <div style="padding:12px;height:260px">
+          <canvas id="thChart"></canvas>
+        </div>
+
+        <table aria-label="Bảng nhiệt độ và độ ẩm" style="margin-top:14px">
+          <thead>
+            <tr>
+              <th>Nhiệt độ (°C)</th>
+              <th>Độ ẩm (%RH)</th>
+            </tr>
+          </thead>
+          <tbody id="roomTbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+<script>
+(function(){
+  // ====== MQTT CONFIG ======
+  const HOST = 'dcede8aa2beb496b980ed91f6804346e.s1.eu.hivemq.cloud';
+  const PORT = 8884; // TLS WebSocket
+  const PATH = '/mqtt';
+  const USERNAME = 'Huy-DTVT17B';
+  const PASSWORD = 'GiaHuy2008@';
+  const WS_URL = `wss://${HOST}:${PORT}${PATH}`;
+
+  // ====== ROOMS ======
+  const ROOMS = ['room1','room2','room3'];
+  let currentRoom = localStorage.getItem('coldroom.currentRoom') || 'room1';
+
+  // Topics
+  const TOPIC = {
+    rfid:  'coldroom/esp32-RFID/rfid',
+    tele:  'coldroom/+/DHT22',
+    state: 'coldroom/+/out1',
+    pub:   (room)=> `coldroom/${room}/client1`,
+    teleOf:(room)=> `coldroom/${room}/DHT22`,
+    stateOf:(room)=> `coldroom/${room}/out1`,
+    // Peltier
+    peltierState: 'coldroom/+/peltier_state',
+    peltierTele:  'coldroom/+/peltier_tele',
+    peltierCmdOf: (room)=> `coldroom/${room}/peltier_cmd`,
+  };
+
+  // ====== DOM ======
+  const hdrDot = document.getElementById('hdrDot');
+  const hdrSt  = document.getElementById('hdrSt');
+  const setHdr = (text, cls)=>{ hdrSt.textContent = text; hdrDot.className = 'dot ' + (cls||''); };
+
+  // Tabs
+  const tabRFIDBtn = document.getElementById('tabRFIDBtn');
+  const tabRoomBtn = document.getElementById('tabRoomBtn');
+  const tabRFID = document.getElementById('tabRFID');
+  const tabRoom = document.getElementById('tabRoom');
+  function activate(tab){
+    [tabRFIDBtn, tabRoomBtn].forEach(b=>b.classList.remove('active'));
+    [tabRFID, tabRoom].forEach(s=>s.classList.remove('active'));
+    if(tab==='rfid'){ tabRFIDBtn.classList.add('active'); tabRFID.classList.add('active'); }
+    else { tabRoomBtn.classList.add('active'); tabRoom.classList.add('active'); }
+    try{ localStorage.setItem('coldroom.activeTab', tab); }catch{}
+  }
+  tabRFIDBtn.addEventListener('click', ()=>activate('rfid'));
+  tabRoomBtn.addEventListener('click', ()=>activate('room'));
+  activate(localStorage.getItem('coldroom.activeTab') || 'rfid');
+
+  // Init labels
+  document.getElementById('rfidBroker').textContent = `${HOST}:${PORT}${PATH}`;
+  document.getElementById('rfidTopic').textContent  = TOPIC.rfid;
+
+  const roomBrokerEl = document.getElementById('roomBroker');
+  const roomSubEl    = document.getElementById('roomSub');
+  const roomStateEl  = document.getElementById('roomState');
+  const roomPubEl    = document.getElementById('roomPub');
+
+  function refreshRoomLabels(){
+    roomBrokerEl.textContent = `${HOST}:${PORT}${PATH}`;
+    roomSubEl.textContent    = TOPIC.teleOf(currentRoom);
+    roomStateEl.textContent  = TOPIC.stateOf(currentRoom);
+    roomPubEl.textContent    = TOPIC.pub(currentRoom);
+
+    document.getElementById('pelCmdTopic').textContent   = TOPIC.peltierCmdOf(currentRoom);
+    document.getElementById('pelStateTopic').textContent = `coldroom/${currentRoom}/peltier_state`;
+    document.getElementById('pelTeleTopic').textContent  = `coldroom/${currentRoom}/peltier_tele`;
+  }
+
+  // ====== MQTT client ======
+  setHdr('Đang kết nối…','warn');
+  const client = mqtt.connect(WS_URL, {
+    clientId: 'webapp-' + Math.random().toString(16).slice(2),
+    username: USERNAME,
+    password: PASSWORD,
+    clean: true,
+    reconnectPeriod: 2000,
+    connectTimeout: 15000,
+    keepalive: 60,
+    protocolVersion: 4,
+  });
+
+  client.on('connect', () => {
+    setHdr('Đã kết nối','ok');
+    client.subscribe([TOPIC.rfid, TOPIC.tele, TOPIC.state, TOPIC.peltierState, TOPIC.peltierTele], { qos: 0 }, (err) => {
+      if(err) setHdr('Sub lỗi: ' + err.message, 'err');
+      else {
+        // Xin state ngay
+        try { client.publish(TOPIC.pub(currentRoom), JSON.stringify({ getState:1 }), { qos:0, retain:false }); } catch {}
+        // Sau khi sub xong, đẩy lại cấu hình Peltier đã lưu cho phòng hiện tại
+        setTimeout(() => pushPelFromStorage(currentRoom), 400);
+      }
+    });
+  });
+  client.on('reconnect', () => setHdr('Đang thử kết nối lại…','warn'));
+  client.on('close', () => setHdr('Mất kết nối','err'));
+  client.on('error', (e) => setHdr('Lỗi: ' + (e?.message || e), 'err'));
+
+  // ====== Utils ======
+  const debounce = (fn, ms=180)=>{ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; };
+  const safeDate = (iso)=>{ try{ return new Date(iso).toLocaleString('vi-VN'); }catch{ return new Date().toLocaleString('vi-VN'); } };
+  const parseRoomFromTopic = (topic)=>{
+    const parts = topic.split('/');
+    return (parts.length>=3 && parts[0]==='coldroom') ? parts[1] : '';
+  };
+  const clamp = (v,min,max)=>Math.max(min,Math.min(max,v|0));
+
+  // ====== RFID MODULE ======
+  const rfid = (function(){
+    const tbody = document.getElementById('rfidTbody');
+    const cntEl = document.getElementById('rfidCnt');
+    const selDevice = document.getElementById('rfidSelDevice');
+    const search = document.getElementById('rfidSearch');
+    const rows = [];
+    const deviceSet = new Set();
+    const MAX_KEEP = 200;
+    document.getElementById('rfidMax').textContent = MAX_KEEP;
+
+    const LS_ROWS = 'rfidLogRows.v1';
+    const LS_FILTER = 'rfidLogFilter.v1';
+
+    function addDeviceOpt(d){
+      if(!d || deviceSet.has(d)) return;
+      deviceSet.add(d);
+      const o=document.createElement('option'); o.value=d; o.textContent=d;
+      selDevice.appendChild(o);
+    }
+    function matchesFilter(item){
+      if (selDevice.value && item.device_id !== selDevice.value) return false;
+      const q = search.value.trim().toLowerCase();
+      if (!q) return true;
+      return (item.uid||'').toLowerCase().includes(q) || (item.name||'').toLowerCase().includes(q);
+    }
+    function render(){
+      tbody.innerHTML = '';
+      cntEl.textContent = rows.length;
+      const filtered = rows.filter(matchesFilter);
+      for(const it of filtered){
+        const tr = document.createElement('tr');
+        const badge = it.action === 'IN' ? '<span class="badge b-in">IN</span>' : '<span class="badge b-out">OUT</span>';
+        tr.innerHTML = `
+          <td>${it.device_id||'—'}</td>
+          <td class="mono">${it.uid||'—'}</td>
+          <td>${it.name||'—'}</td>
+          <td>${badge}</td>
+          <td class="mono">${safeDate(it.timestamp)}</td>`;
+        tbody.appendChild(tr);
+      }
+    }
+    let saveTimer;
+    function saveState(){
+      const capped = rows.slice(0, MAX_KEEP);
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(()=>{
+        try{
+          localStorage.setItem(LS_ROWS, JSON.stringify(capped));
+          localStorage.setItem(LS_FILTER, JSON.stringify({ sel: selDevice.value || '', q: search.value || '' }));
+        }catch(e){ console.warn('Không thể lưu localStorage:', e); }
+      }, 150);
+    }
+    function loadState(){
+      try{
+        const savedRows = JSON.parse(localStorage.getItem(LS_ROWS) || '[]');
+        if (Array.isArray(savedRows) && savedRows.length){
+          rows.length = 0;
+          for (const it of savedRows){
+            if (it && typeof it === 'object'){
+              rows.push(it); addDeviceOpt(it.device_id);
+            }
+          }
+          if (rows.length > MAX_KEEP) rows.length = MAX_KEEP;
+        }
+        const f = JSON.parse(localStorage.getItem(LS_FILTER) || '{}');
+        if (f && typeof f === 'object'){
+          if (typeof f.sel === 'string'){ if (f.sel && !deviceSet.has(f.sel)) addDeviceOpt(f.sel); selDevice.value = f.sel || ''; }
+          if (typeof f.q === 'string') search.value = f.q;
+        }
+      }catch(e){ console.warn('Không thể khôi phục localStorage:', e); }
+    }
+
+    document.getElementById('btnRFIDClear').addEventListener('click', ()=>{
+      rows.length = 0;
+      try{ localStorage.removeItem(LS_ROWS); localStorage.removeItem(LS_FILTER); }catch{}
+      deviceSet.clear();
+      while (selDevice.options.length > 1) selDevice.remove(1);
+      search.value = '';
+      render();
+      setHdr('Đã xoá toàn bộ bảng & localStorage', 'warn');
+    });
+
+    document.getElementById('btnRFIDClearScreen').addEventListener('click', ()=>{
+      tbody.innerHTML = '';
+      setHdr('Đã xoá HIỂN THỊ bảng (dữ liệu vẫn được giữ)', 'warn');
+    });
+
+    document.getElementById('btnRFIDRestore').addEventListener('click', ()=>{
+      render();
+      setHdr('Đã khôi phục hiển thị bảng từ dữ liệu đã lưu', 'ok');
+    });
+
+    document.getElementById('btnRFIDCSV').addEventListener('click', ()=>{
+      const data = rows.filter(matchesFilter);
+      const hdr = ['device_id','uid','name','action','timestamp'];
+      const csv = [hdr.join(',')].concat(data.map(r => hdr.map(k => '"' + String(r[k] ?? '').replaceAll('"','""') + '"').join(','))).join('\n');
+      const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+      const ts = new Date().toISOString().replaceAll(':','-').split('.')[0];
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `rfid-log_${ts}.csv`; a.click(); URL.revokeObjectURL(a.href);
+    });
+
+    selDevice.addEventListener('change', ()=>{ render(); saveState(); });
+    document.getElementById('rfidSearch').addEventListener('input', debounce(()=>{ render(); saveState(); }, 160));
+
+    function handleRFIDMessage(payload){
+      try{
+        const msg = JSON.parse(payload);
+        const item = {
+          device_id: msg.device_id || '',
+          uid: String(msg.uid||'').toUpperCase(),
+          name: msg.name || '',
+          action: String(msg.action||'').toUpperCase(),
+          timestamp: msg.timestamp || new Date().toISOString()
+        };
+        if (!item.uid || !item.action) return;
+        addDeviceOpt(item.device_id);
+        rows.unshift(item);
+        if (rows.length > MAX_KEEP) rows.length = MAX_KEEP;
+        saveState();
+        render();
+      }catch(e){ console.warn('Không parse được RFID JSON:', payload); }
+    }
+
+    loadState(); render(); saveState();
+    return { handleRFIDMessage };
+  })();
+
+  // ====== ROOM(S) MODULE ======
+  const roomMod = (function(){
+    const tbody = document.getElementById('roomTbody');
+    const grid = document.getElementById('relayGrid');
+    const sumBadge = document.getElementById('sumBadge');
+    const sumText  = document.getElementById('sumText');
+    const doorBadge= document.getElementById('doorBadge');
+    const doorText = document.getElementById('doorText');
+    const histMaxEl = document.getElementById('histMax');
+
+    const relayKeys = ['r1','r2','r3','r4'];
+    const relayUI = {};
+    grid.innerHTML = '';
+    relayKeys.forEach((k, idx) => {
+      const n = idx+1;
+      const card = document.createElement('div');
+      card.className = 'relayCard';
+      card.innerHTML = `
+        <div class='relayHead'>
+          <strong>Relay ${n}</strong>
+          <div id='${k}Badge' class='badge'><span class='dot'></span><span id='${k}Text'>${k.toUpperCase()}: —</span></div>
+        </div>
+        <div class='controls'>
+          <button id='${k}On'  class='primary' type='button' title='Gửi {"${k}":1}'>ON</button>
+          <button id='${k}Off' class='danger'  type='button' title='Gửi {"${k}":0}'>OFF</button>
+        </div>`;
+      grid.appendChild(card);
+      relayUI[k] = {
+        badgeEl: card.querySelector('#'+k+'Badge'),
+        textEl:  card.querySelector('#'+k+'Text'),
+        onBtn:   card.querySelector('#'+k+'On'),
+        offBtn:  card.querySelector('#'+k+'Off'),
+      };
+    });
+
+    function publish(obj){
+      const payload = JSON.stringify(obj);
+      if (client && client.connected){
+        client.publish(TOPIC.pub(currentRoom), payload, { qos:0, retain:false });
+        setHdr('Đã gửi ' + payload + ' → ' + TOPIC.pub(currentRoom), 'ok');
+      } else setHdr('Chưa kết nối, không thể gửi', 'err');
+    }
+    document.getElementById('allOn').addEventListener('click', ()=> publish({r1:1,r2:1,r3:1,r4:1}));
+    document.getElementById('allOff').addEventListener('click',()=> publish({r1:0,r2:0,r3:0,r4:0}));
+    relayKeys.forEach(k=>{
+      relayUI[k].onBtn.addEventListener('click',  ()=> publish({ [k]:1 }));
+      relayUI[k].offBtn.addEventListener('click', ()=> publish({ [k]:0 }));
+    });
+
+    // ===== History =====
+    const LS_HIST_PREFIX = 'roomTH.hist.v1.';
+    const LS_HIST_LIMIT  = 'roomTH.hist.limit';
+    const hist = { room1:{labels:[],t:[],h:[]}, room2:{labels:[],t:[],h:[]}, room3:{labels:[],t:[],h:[]} };
+
+    const ctx = document.getElementById('thChart').getContext('2d');
+    let chart = new Chart(ctx, {
+      type: 'line',
+      data: { labels: [], datasets: [
+        { label: 'Nhiệt độ (°C)', data: [], tension: .25, pointRadius: 0 },
+        { label: 'Độ ẩm (%RH)',  data: [], tension: .25, pointRadius: 0 }
+      ]},
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'nearest', intersect: false },
+        plugins: { legend: { labels: { color: getComputedStyle(document.documentElement).getPropertyValue('--text') } } },
+        scales: {
+          x: { ticks: { autoSkip:true, maxRotation:0, color:getComputedStyle(document.documentElement).getPropertyValue('--muted') }, grid:{ color:'rgba(148,163,184,.15)' } },
+          y: { ticks: { color:getComputedStyle(document.documentElement).getPropertyValue('--muted') }, grid:{ color:'rgba(148,163,184,.12)' } }
+        }
+      }
+    });
+
+    function limitForHist(){
+      const v = Number(localStorage.getItem(LS_HIST_LIMIT));
+      const n = Number.isFinite(v) && v>=50 && v<=2000 ? v : Number(histMaxEl.value)||200;
+      return Math.max(50, Math.min(2000, n));
+    }
+    function persistHistory(room){
+      try{
+        const pack = { labels: hist[room].labels, t: hist[room].t, h: hist[room].h };
+        localStorage.setItem(LS_HIST_PREFIX + room, JSON.stringify(pack));
+        localStorage.setItem(LS_HIST_LIMIT, String(limitForHist()));
+      }catch(e){ console.warn('Không lưu được history:', e); }
+    }
+    function loadHistory(room){
+      try{
+        const pack = JSON.parse(localStorage.getItem(LS_HIST_PREFIX + room) || 'null');
+        if (pack && Array.isArray(pack.labels)){
+          hist[room].labels = pack.labels || []; hist[room].t = pack.t || []; hist[room].h = pack.h || [];
+        }
+      }catch(e){ console.warn('Không khôi phục được history:', e); }
+    }
+    ['room1','room2','room3'].forEach(r => loadHistory(r));
+    histMaxEl.value = limitForHist();
+
+    function applyChartRoom(room){
+      const data = hist[room];
+      chart.data.labels = data.labels; chart.data.datasets[0].data = data.t; chart.data.datasets[1].data = data.h;
+      chart.update('none');
+    }
+    function appendTelemetry(room, t, h){
+      const L = limitForHist();
+      const data = hist[room];
+      const label = new Date().toLocaleTimeString('vi-VN', { hour12:false });
+      data.labels.push(label); data.t.push(Number(t)); data.h.push(Number(h));
+      while(data.labels.length > L){ data.labels.shift(); data.t.shift(); data.h.shift(); }
+      if (room === currentRoom) chart.update('none');
+      persistHistory(room);
+    }
+
+    document.getElementById('histClear').addEventListener('click', ()=>{
+      const data = hist[currentRoom]; data.labels=[]; data.t=[]; data.h=[];
+      applyChartRoom(currentRoom); try{ localStorage.removeItem(LS_HIST_PREFIX + currentRoom); }catch{}
+      setHdr(`Đã xoá lịch sử biểu đồ của ${currentRoom}`, 'warn');
+    });
+    histMaxEl.addEventListener('change', ()=>{
+      const L = limitForHist();
+      localStorage.setItem(LS_HIST_LIMIT, String(L));
+      const d = hist[currentRoom];
+      while(d.labels.length > L){ d.labels.shift(); d.t.shift(); d.h.shift(); }
+      applyChartRoom(currentRoom); persistHistory(currentRoom);
+    });
+
+    // ===== State/door/relays =====
+    const stateCache = {
+      room1: { door:null, r:{r1:null,r2:null,r3:null,r4:null} },
+      room2: { door:null, r:{r1:null,r2:null,r3:null,r4:null} },
+      room3: { door:null, r:{r1:null,r2:null,r3:null,r4:null} },
+    };
+
+    function updateDoorBadge(room, val01){
+      const open = Number(val01) === 1;
+      if (room === currentRoom){
+        doorBadge.classList.remove('open','closed'); doorBadge.classList.add(open ? 'open' : 'closed');
+        doorText.textContent = 'Door: ' + (open ? 'OPEN' : 'CLOSED');
+      }
+      stateCache[room].door = open ? 1 : 0;
+    }
+    function setRelayBadge(room, key, val01){
+      const on = Number(val01) === 1;
+      if (room === currentRoom){
+        const ui = relayUI[key];
+        ui.badgeEl.classList.remove('on','off'); ui.badgeEl.classList.add(on ? 'on' : 'off');
+        ui.textEl.textContent = key.toUpperCase() + ': ' + (on ? 'ON' : 'OFF');
+      }
+      stateCache[room].r[key] = on ? 1 : 0; updateSumBadge(room);
+    }
+    function updateSumBadge(room){
+      const s = stateCache[room].r;
+      const vals = Object.values(s).filter(v=>v!==null);
+      if (room !== currentRoom) return;
+      if (vals.length===0){ sumText.textContent = 'Relays: —'; sumBadge.classList.remove('on','off'); return; }
+      const onCount = vals.reduce((a,b)=>a+(b?1:0),0);
+      sumText.textContent = `Relays: ${onCount}/${vals.length} ON`;
+      sumBadge.classList.remove('on','off');
+      if (onCount===vals.length) sumBadge.classList.add('on');
+      else if (onCount===0) sumBadge.classList.add('off');
+    }
+
+    function handleStateFrom(room, msg){
+      try{
+        const obj = JSON.parse(msg);
+        if (obj.relay !== undefined) setRelayBadge(room,'r1', obj.relay===true?1:obj.relay===false?0:Number(obj.relay));
+        ['r1','r2','r3','r4'].forEach(k=>{
+          if (obj[k] !== undefined){
+            const v = obj[k]===true?1:obj[k]===false?0:Number(obj[k]);
+            if (v===0||v===1) setRelayBadge(room, k, v);
+          }
+        });
+        const arr = Array.isArray(obj.relays) ? obj.relays : Array.isArray(obj.relayArray) ? obj.relayArray : null;
+        if (arr && arr.length){
+          for(let i=0;i<Math.min(arr.length, 4);i++){
+            const v = arr[i]===true?1:arr[i]===false?0:Number(arr[i]);
+            if (v===0||v===1) setRelayBadge(room, relayKeys[i], v);
+          }
+        }
+        if (obj.door !== undefined){
+          const dv = obj.door===true?1:obj.door===false?0:Number(obj.door);
+          if (dv===0||dv===1) updateDoorBadge(room, dv);
+        }
+      }catch(e){ console.warn('STATE JSON error:', msg); }
+    }
+
+    function handleTelemetryFrom(room, msg){
+      let t=null,h=null;
+      try{
+        const o = JSON.parse(msg);
+        t = (o.temp ?? o.temperature ?? o.T ?? null);
+        h = (o.humi ?? o.humidity ?? o.H ?? null);
+      }catch(_){
+        const parts = String(msg).split(/[;,\s]+/).filter(Boolean);
+        if(parts.length>=2){ t=parseFloat(parts[0]); h=parseFloat(parts[1]); }
+      }
+      if(Number.isFinite(t) && Number.isFinite(h)){
+        if (room === currentRoom){
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${Number(t).toFixed(1)}</td><td>${Number(h).toFixed(1)}</td>`;
+          tbody.replaceChildren(tr);
+        }
+        appendTelemetry(room, t, h);
+      } else console.warn('Không phân tích được dữ liệu:', msg);
+    }
+
+    // ===== PERSISTENCE (Peltier per-room) =====
+    const LS_PEL_PREFIX = 'pel.ctrl.v2.';
+    const pelKey = (room)=> LS_PEL_PREFIX + room;
+    function loadPel(room){
+      const def = { mode:'manual', enable:1, duty:0, minDuty:0, maxDuty:255 };
+      try{
+        const s = JSON.parse(localStorage.getItem(pelKey(room)) || 'null');
+        if (s && typeof s === 'object'){
+          return {
+            mode: (s.mode==='off'?'off':'manual'),
+            enable: s.enable?1:0,
+            duty: clamp(s.duty??0, 0, 255),
+            minDuty: clamp(s.minDuty??0, 0, 255),
+            maxDuty: clamp(s.maxDuty??255, 0, 255),
+          };
+        }
+      }catch{}
+      return def;
+    }
+    function savePel(room){
+      try{
+        const c = pelCache[room];
+        const pack = {
+          mode: (c.mode==='off'?'off':'manual'),
+          enable: c.enable?1:0,
+          duty: clamp(c.duty??0, 0, 255),
+          minDuty: clamp(c.minDuty??0, 0, 255),
+          maxDuty: clamp(c.maxDuty??255, 0, 255),
+        };
+        localStorage.setItem(pelKey(room), JSON.stringify(pack));
+      }catch(e){ console.warn('Không lưu được Peltier localStorage:', e); }
+    }
+
+    // ===== Peltier (manual/off) =====
+    const pelCache = {
+      room1: loadPel('room1'),
+      room2: loadPel('room2'),
+      room3: loadPel('room3'),
+    };
+
+    const pelEnable   = document.getElementById('peltierEnable');
+    const pelSlider   = document.getElementById('peltierSlider');
+    const pelDutyLbl  = document.getElementById('pelDutyLbl');
+    const pelPctLbl   = document.getElementById('pelPctLbl');
+    const pelModeLbl  = document.getElementById('pelModeLbl');
+    const modeManualBtn  = document.getElementById('modeManual');
+    const modeOffBtn     = document.getElementById('modeOff');
+
+    let isDraggingDuty = false;
+
+    function publishPel(obj){
+      const payload = JSON.stringify(obj);
+      if (client && client.connected){
+        client.publish(TOPIC.peltierCmdOf(currentRoom), payload, { qos:0, retain:false });
+        setHdr('Đã gửi ' + payload + ' → ' + TOPIC.peltierCmdOf(currentRoom), 'ok');
+      } else setHdr('Chưa kết nối, không thể gửi', 'err');
+    }
+
+    function applyPeltierUI(room){
+      const c = pelCache[room];
+      pelModeLbl.textContent = String(c.mode || '—').toUpperCase();
+
+      [modeManualBtn, modeOffBtn].forEach(b=>b.classList.remove('active'));
+      if (c.mode === 'manual') modeManualBtn.classList.add('active');
+      else if (c.mode === 'off') modeOffBtn.classList.add('active');
+
+      pelEnable.checked = !!c.enable;
+
+      pelSlider.min = String(Number.isFinite(c.minDuty)? c.minDuty : 0);
+      pelSlider.max = String(Number.isFinite(c.maxDuty)? c.maxDuty : 255);
+
+      if (!isDraggingDuty && Number.isFinite(c.duty)) pelSlider.value = String(c.duty);
+      pelDutyLbl.textContent = Number.isFinite(c.duty) ? c.duty : (pelSlider.value|0);
+
+      const pct = Math.round(100 * (pelSlider.value|0) / 255);
+      pelPctLbl.textContent = Number.isFinite(c.pct) ? c.pct : pct;
+
+      pelSlider.disabled = !pelEnable.checked;
+    }
+
+    function handlePeltierStateFrom(room, json){
+      try{
+        const o = JSON.parse(json);
+        const c = pelCache[room];
+        c.mode       = String(o.mode || c.mode || 'manual').toLowerCase()==='off'?'off':'manual';
+        if (o.enable !== undefined)      c.enable     = Number(o.enable) ? 1 : 0;
+        if (Number.isFinite(o.duty))     c.duty       = clamp(o.duty, 0, 255);
+        if (Number.isFinite(o.manualDuty))c.manualDuty= clamp(o.manualDuty, 0, 255);
+        if (Number.isFinite(o.minDuty))   c.minDuty   = clamp(o.minDuty, 0, 255);
+        if (Number.isFinite(o.maxDuty))   c.maxDuty   = clamp(o.maxDuty, 0, 255);
+        savePel(room);
+        if (room === currentRoom) applyPeltierUI(room);
+      }catch(e){ console.warn('PELTIER_STATE JSON error:', json); }
+    }
+
+    function handlePeltierTeleFrom(room, json){
+      try{
+        const o = JSON.parse(json);
+        const c = pelCache[room];
+        if (Number.isFinite(o.duty))  c.duty  = clamp(o.duty, 0, 255);
+        if (Number.isFinite(o.pct))   c.pct   = clamp(o.pct, 0, 100);
+        savePel(room);
+        if (room === currentRoom) applyPeltierUI(room);
+      }catch(e){ console.warn('PELTIER_TELE JSON error:', json); }
+    }
+
+    // UI -> MQTT + persist
+    pelEnable.addEventListener('change', ()=>{
+      const v = pelEnable.checked?1:0;
+      pelCache[currentRoom].enable = v;
+      savePel(currentRoom);
+      publishPel({ enable: !!v, ...(pelCache[currentRoom].mode==='manual'?{mode:'manual',duty: (pelSlider.value|0)}:{}) });
+    });
+
+    modeManualBtn.addEventListener('click',()=>{
+      pelCache[currentRoom].mode = 'manual';
+      savePel(currentRoom);
+      applyPeltierUI(currentRoom);
+      publishPel({ mode: 'manual', duty: (pelSlider.value|0), enable: !!pelEnable.checked });
+    });
+
+    modeOffBtn.addEventListener('click', ()=>{
+      pelCache[currentRoom].mode = 'off';
+      savePel(currentRoom);
+      applyPeltierUI(currentRoom);
+      publishPel({ mode: 'off' });
+    });
+
+    const sendDutyDebounced = debounce(()=>{
+      const d = pelSlider.value|0;
+      pelCache[currentRoom].duty = d;
+      savePel(currentRoom);
+      publishPel({ mode:'manual', duty:d, enable: !!pelEnable.checked });
+      isDraggingDuty = false;
+    }, 140);
+
+    pelSlider.addEventListener('input', ()=>{
+      isDraggingDuty = true;
+      pelDutyLbl.textContent = pelSlider.value;
+      pelCache[currentRoom].duty = pelSlider.value|0;
+      savePel(currentRoom);
+      sendDutyDebounced();
+    });
+
+    pelSlider.addEventListener('change',()=>{
+      isDraggingDuty = false;
+      const d = pelSlider.value|0;
+      pelCache[currentRoom].duty = d;
+      savePel(currentRoom);
+      publishPel({ mode:'manual', duty:d, enable: !!pelEnable.checked });
+    });
+
+    // Đẩy cấu hình đã lưu cho 1 phòng
+    function pushPelFromStorage(room){
+      const s = loadPel(room);
+      if (s.mode === 'off'){
+        publishPel({ mode:'off' });
+      } else {
+        publishPel({ mode:'manual', duty:s.duty|0, enable: !!s.enable });
+      }
+    }
+
+    // Khi đổi phòng: cập nhật UI + (nhẹ) đẩy lại cấu hình đã lưu
+    function applyRoomSwitch(room){
+      refreshRoomLabels();
+      const st = stateCache[room];
+      if (st.door!==null) updateDoorBadge(room, st.door);
+      ['r1','r2','r3','r4'].forEach(k=>{ if (st.r[k]!==null) setRelayBadge(room,k,st.r[k]); });
+      updateSumBadge(room);
+      applyChartRoom(room);
+      applyPeltierUI(room);
+      try { client.publish(TOPIC.pub(room), JSON.stringify({ getState:1 }), { qos:0, retain:false }); } catch {}
+      // Nhẹ tay: chờ 300ms rồi đẩy lại cấu hình Peltier đã lưu cho phòng vừa chuyển tới
+      setTimeout(()=> pushPelFromStorage(room), 300);
+    }
+
+    // Áp UI ban đầu theo cấu hình lưu sẵn (trước khi nhận state từ thiết bị)
+    applyPeltierUI(currentRoom);
+
+    return { handleStateFrom, handleTelemetryFrom, applyRoomSwitch,
+             handlePeltierStateFrom, handlePeltierTeleFrom };
+  })();
+
+  // ====== ROOM selector ======
+  const roomBtns = Array.from(document.querySelectorAll('.roombtn'));
+  function setCurrentRoom(room){
+    if (!ROOMS.includes(room)) return;
+    currentRoom = room;
+    localStorage.setItem('coldroom.currentRoom', currentRoom);
+    roomBtns.forEach(b=> b.classList.toggle('active', b.dataset.room===room));
+    roomMod.applyRoomSwitch(room);
+  }
+  roomBtns.forEach(b => b.addEventListener('click', ()=> setCurrentRoom(b.dataset.room)));
+  refreshRoomLabels();
+  setCurrentRoom(currentRoom);
+
+  // ====== ROUTE MQTT messages ======
+  client.on('message', (topic, payload) => {
+    const msg = payload.toString();
+    if (topic === TOPIC.rfid)   return rfid.handleRFIDMessage(msg);
+    const room = parseRoomFromTopic(topic);
+
+    if (topic.startsWith('coldroom/') && topic.endsWith('/out1'))
+      return roomMod.handleStateFrom(room, msg);
+
+    if (topic.startsWith('coldroom/') && topic.endsWith('/DHT22'))
+      return roomMod.handleTelemetryFrom(room, msg);
+
+    if (topic.startsWith('coldroom/') && topic.endsWith('/peltier_state'))
+      return roomMod.handlePeltierStateFrom(room, msg);
+
+    if (topic.startsWith('coldroom/') && topic.endsWith('/peltier_tele'))
+      return roomMod.handlePeltierTeleFrom(room, msg);
+  });
+
+  console.warn('⚠️ Lưu ý: USERNAME/PASSWORD MQTT đang ở client-side. Cân nhắc token tạm thời hoặc proxy nếu deploy công khai.');
+})();
+</script>
+</body>
+</html>
