@@ -1,0 +1,613 @@
+function doGet(e) {
+  Logger.log(JSON.stringify(e));
+  var result = 'Ok';
+
+  // Không có tham số
+  if (!e || !e.parameter || Object.keys(e.parameter).length === 0) {
+    return ContentService.createTextOutput('No Parameters');
+  }
+
+  // ===== Thông tin file + tên các sheet =====
+  var sheet_id = '1eU0HPzWhDaeF8UvmeHoQMh0lxxxX-ds1ir5rA1F6dus';
+
+  var MAIN_SHEET = 'Tất cả';
+
+  // Sheet theo Phòng kho (chuẩn hoá)
+  var TPS_SHEET = 'Phòng lạnh 1 (6-11 độ C)';
+  var RCQ_SHEET = 'Phòng lạnh 2 (12-17 độ C)';
+  var CLK_SHEET = 'Phòng lạnh 3 (18-26 độ C)';
+
+  // Sheet theo HSD
+  var SAFE_SHEET   = 'An toàn';
+  var WATCH_SHEET  = 'Cần lưu ý';
+  var DANGER_SHEET = 'Sắp/Đã hết hạn';
+
+  var ss = SpreadsheetApp.openById(sheet_id);
+
+  // Lấy sheet theo kiểu "loose"
+  var sheetMain   = findSheetByNameLoose(ss, MAIN_SHEET);
+  var sheetTPS    = findSheetByNameLoose(ss, TPS_SHEET);
+  var sheetRCQ    = findSheetByNameLoose(ss, RCQ_SHEET);
+  var sheetCLK    = findSheetByNameLoose(ss, CLK_SHEET);
+  var sheetSafe   = findSheetByNameLoose(ss, SAFE_SHEET);
+  var sheetWatch  = findSheetByNameLoose(ss, WATCH_SHEET);
+  var sheetDanger = findSheetByNameLoose(ss, DANGER_SHEET);
+
+  // Định dạng tất cả sheet (tiêu đề, font…)
+  if (sheetMain)   setupSheet(sheetMain);
+  if (sheetTPS)    setupSheet(sheetTPS);
+  if (sheetRCQ)    setupSheet(sheetRCQ);
+  if (sheetCLK)    setupSheet(sheetCLK);
+  if (sheetSafe)   setupSheet(sheetSafe);
+  if (sheetWatch)  setupSheet(sheetWatch);
+  if (sheetDanger) setupSheet(sheetDanger);
+
+  // Mảng dữ liệu 1 dòng: A..J (10 cột)
+  var rowDataLog = new Array(10);
+
+  // Thời điểm hiện tại (giờ VN)
+  var now = new Date();
+  var Curr_Date = Utilities.formatDate(now, 'Asia/Ho_Chi_Minh', 'dd/MM/yyyy');
+  var Curr_Time = Utilities.formatDate(now, 'Asia/Ho_Chi_Minh', 'HH:mm:ss');
+
+  // Cột E, F
+  rowDataLog[4] = Curr_Date;
+  rowDataLog[5] = Curr_Time;
+
+  var sts_val = '';
+  var hsdStr  = '';
+  var roomKey = '';   // room1 / room2 / room3
+
+  // Đọc tham số từ ESP32
+  for (var param in e.parameter) {
+    var value = stripQuotes(e.parameter[param]);
+    Logger.log(param + ':' + e.parameter[param]);
+
+    switch (param) {
+      case 'room':
+        roomKey = value;     // room1 / room2 / room3
+        break;
+
+      case 'sts':
+        sts_val = value;     // chỉ còn hỗ trợ write
+        break;
+
+      case 'io': // D
+        rowDataLog[3] = value;
+        result += ', IO Written';
+        break;
+
+      case 'item': // B
+        rowDataLog[1] = normalizeItemName(value);
+        result += ', Item Written';
+        break;
+
+      case 'nsx': // G
+        rowDataLog[6] = value;
+        result += ', NSX Written';
+        break;
+
+      case 'hsd': // H
+        hsdStr = value;
+        rowDataLog[7] = value;
+        result += ', HSD Written';
+        break;
+
+      case 'tmin':
+      case 'tmax':
+      case 'uid':
+        // hiện tại không ghi 2 giá trị này vào sheet (bạn đang không có cột cho nó)
+        result += ', ' + param + ' ignored';
+        break;
+
+      default:
+        result += ', unsupported parameter: ' + param;
+    }
+  }
+
+  // ===== PHÒNG KHO LẤY TRỰC TIẾP TỪ roomKey =====
+  if (roomKey === 'room1') rowDataLog[2] = TPS_SHEET;
+  else if (roomKey === 'room2') rowDataLog[2] = RCQ_SHEET;
+  else if (roomKey === 'room3') rowDataLog[2] = CLK_SHEET;
+  else rowDataLog[2] = 'Không xác định';
+
+  // Cột I để trống (tính lại sau)
+  rowDataLog[8] = '';
+
+  // Cột J: sắp quá hạn + màu
+  rowDataLog[9] = computeExpireRemainingText(hsdStr, now);
+  var diffDays = computeExpireRemainingDays(hsdStr, now);
+
+  // ======== CHỈ GHI DỮ LIỆU (WRITE) ========
+  if (sts_val === 'write') {
+
+    // 1) Ghi vào sheet Tất cả
+    appendRowToSheet(sheetMain, rowDataLog, diffDays, now);
+
+    // 2) Ghi vào sheet theo Phòng kho (theo roomKey)
+    if (roomKey === 'room1' && sheetTPS) {
+      appendRowToSheet(sheetTPS, rowDataLog, diffDays, now);
+    } else if (roomKey === 'room2' && sheetRCQ) {
+      appendRowToSheet(sheetRCQ, rowDataLog, diffDays, now);
+    } else if (roomKey === 'room3' && sheetCLK) {
+      appendRowToSheet(sheetCLK, rowDataLog, diffDays, now);
+    }
+
+    // 3) Ghi vào sheet theo HSD
+    var hsdSheetName = classifyHsdSheet(diffDays);
+    if (hsdSheetName === SAFE_SHEET && sheetSafe) {
+      appendRowToSheet(sheetSafe, rowDataLog, diffDays, now);
+    } else if (hsdSheetName === WATCH_SHEET && sheetWatch) {
+      appendRowToSheet(sheetWatch, rowDataLog, diffDays, now);
+    } else if (hsdSheetName === DANGER_SHEET && sheetDanger) {
+      appendRowToSheet(sheetDanger, rowDataLog, diffDays, now);
+    }
+
+    maxRowData(10001);
+    return ContentService.createTextOutput(result);
+  }
+
+  // ✅ BỎ READ: không còn sts=read nữa
+  return ContentService.createTextOutput('Only sts=write is supported (read removed)');
+}
+
+
+/* =========================================================
+ * PHÂN LOẠI THEO HẠN SỬ DỤNG
+ * =======================================================*/
+function classifyHsdSheet(diffDays) {
+  if (diffDays === null || diffDays === undefined) return '';
+  if (diffDays >= 14) return 'An toàn';
+  if (diffDays >= 7) return 'Cần lưu ý';
+  return 'Sắp/Đã hết hạn';
+}
+
+function appendRowToSheet(sheet, rowDataLog, diffDays, now) {
+  if (!sheet) return;
+
+  // Chèn 1 dòng mới ở hàng 2
+  sheet.insertRows(2);
+  var newRange = sheet.getRange(2, 1, 1, rowDataLog.length);
+  newRange.setValues([rowDataLog]);
+
+  // A: STT
+  sheet.getRange(2, 1).setFormula('=ROW()-1');
+
+  // J: tô màu
+  var jCell = sheet.getRange(2, 10);
+  applyExpireColor(jCell, diffDays);
+
+  // cập nhật lại I
+  recalcWarehouseTime(sheet, now);
+}
+
+/* =========================================================
+ * CHUẨN HÓA TIẾNG VIỆT (SỬA LỖI Đ/đ)
+ * =======================================================*/
+function vnKey_(s) {
+  return String(s || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd'); // QUAN TRỌNG: "đ" -> "d"
+}
+
+/* =========================================================
+ * PHÂN Phòng kho / CHUẨN HÓA
+ * =======================================================*/
+function normalizeGroupSheetName(groupStr) {
+  if (!groupStr) return '';
+  var s = String(groupStr).toLowerCase().trim();
+  s = s.replace(/\s+/g, ' ').replace(/\s*-\s*/g, '-');
+
+  if (s.indexOf('phòng lạnh 1') !== -1) return 'Phòng lạnh 1 (6-11 độ C)';
+  if (s.indexOf('phòng lạnh 2') !== -1) return 'Phòng lạnh 2 (12-17 độ C)';
+  if (s.indexOf('phòng lạnh 3') !== -1) return 'Phòng lạnh 3 (18-26 độ C)';
+  return '';
+}
+
+// Chuẩn hóa tên hàng hóa hiển thị (có dấu)
+function normalizeItemName(rawName) {
+  if (!rawName) return '';
+
+  var k = vnKey_(rawName);
+
+  // Phòng 1
+  if (k === 'ca tim') return 'Cà tím';
+  if (k === 'dau cove') return 'Đậu Cove';
+  if (k === 'ca chua') return 'Cà chua';
+  if (k === 'tac') return 'Tắc';
+  if (k === 'trung') return 'Trứng';
+  if (k === 'dua leo') return 'Dưa leo';
+
+  // Phòng 2
+  if (k === 'gao') return 'Gạo';
+  if (k === 'banh keo') return 'Bánh kẹo';
+  if (k === 'bot mi') return 'Bột mì';
+  if (k === 'ca phe') return 'Cà phê';
+  if (k === 'socola') return 'Socola';
+  if (k === 'tra') return 'Trà';
+
+  // Phòng 3
+  if (k === 'thuoc vien') return 'Thuốc viên';
+  if (k === 'my pham') return 'Mỹ phẩm';
+  if (k === 'nuoc hoa') return 'Nước hoa';
+  if (k === 'thuoc bot') return 'Thuốc bột';
+  if (k === 'vitamin') return 'Vitamin';
+
+  return rawName; // không khớp thì giữ nguyên
+}
+
+function getCategoryInfoFromItem(itemName) {
+  if (!itemName) return null;
+
+  var k = vnKey_(itemName);
+
+  // Phòng 1 (6-11)
+  if (k === 'ca tim' || k === 'dau cove' || k === 'ca chua' ||
+    k === 'tac' || k === 'trung' || k === 'dua leo') {
+    return {
+      displayName: 'Phòng lạnh 1 (6-11 độ C)',
+      sheetName: 'Phòng lạnh 1 (6-11 độ C)'
+    };
+  }
+
+  // Phòng 2 (12-17)
+  if (k === 'gao' || k === 'banh keo' || k === 'bot mi' ||
+    k === 'ca phe' || k === 'socola' || k === 'tra') {
+    return {
+      displayName: 'Phòng lạnh 2 (12-17 độ C)',
+      sheetName: 'Phòng lạnh 2 (12-17 độ C)'
+    };
+  }
+
+  // Phòng 3 (18-26)
+  if (k === 'thuoc vien' || k === 'my pham' || k === 'nuoc hoa' ||
+    k === 'thuoc bot' || k === 'vitamin') {
+    return {
+      displayName: 'Phòng lạnh 3 (18-26 độ C)',
+      sheetName: 'Phòng lạnh 3 (18-26 độ C)'
+    };
+  }
+
+  return null;
+}
+
+/* =========================================================
+ * SETUP SHEET & GIỚI HẠN SỐ DÒNG
+ * =======================================================*/
+function setupSheet(sheet) {
+  if (!sheet) return;
+
+  var maxRows = sheet.getMaxRows();
+  var maxCols = sheet.getMaxColumns();
+
+  sheet.getRange(1, 1, maxRows, maxCols).setFontFamily('Times New Roman');
+
+  var headers = [[
+    'Số thứ tự',
+    'Tên hàng hóa',
+    'Phòng kho',
+    'Trạng thái nhập xuất',
+    'Ngày/tháng/năm',
+    'Thời gian',
+    'Ngày sản xuất',
+    'Hạn sử dụng',
+    'Thời gian đã ở trong kho',
+    'Thời gian sắp quá hạn'
+  ]];
+
+  var headerRange = sheet.getRange(1, 1, 1, headers[0].length);
+  headerRange.setValues(headers);
+  headerRange.setFontWeight('bold');
+  headerRange.setHorizontalAlignment('center');
+
+  // Cột A dạng số
+  sheet.getRange(1, 1, maxRows, 1).setNumberFormat('0');
+}
+
+function maxRowData(allRowsAfter) {
+  var sheet_id = '1eU0HPzWhDaeF8UvmeHoQMh0lxxxX-ds1ir5rA1F6dus';
+  var sheet_names = [
+    'Tất cả',
+    'Phòng lạnh 1 (6-11 độ C)',
+    'Phòng lạnh 2 (12-17 độ C)',
+    'Phòng lạnh 3 (18-26 độ C)',
+    'An toàn',
+    'Cần lưu ý',
+    'Sắp/Đã hết hạn'
+  ];
+
+  var ss = SpreadsheetApp.openById(sheet_id);
+
+  sheet_names.forEach(function (name) {
+    var sheet = findSheetByNameLoose(ss, name);
+    if (!sheet) return;
+
+    var lastRow = sheet.getLastRow();
+    if (lastRow > allRowsAfter) {
+      var numRowsToClear = lastRow - allRowsAfter;
+      sheet.getRange(allRowsAfter + 1, 1, numRowsToClear, sheet.getLastColumn())
+        .clearContent();
+    }
+  });
+}
+
+/* =========================================================
+ * HÀM PHỤ XỬ LÝ CHUỖI & THỜI GIAN
+ * =======================================================*/
+function stripQuotes(value) {
+  return String(value).replace(/^["']|['"]$/g, '');
+}
+
+function formatDurationWarehouse(totalSec) {
+  if (!totalSec || isNaN(totalSec)) return '';
+  totalSec = Math.floor(totalSec);
+
+  var secondsPerDay = 86400;
+  var days = Math.floor(totalSec / secondsPerDay);
+  if (days >= 1) return days + ' ngày';
+
+  var hours = Math.floor((totalSec % secondsPerDay) / 3600);
+  var mins = Math.floor((totalSec % 3600) / 60);
+
+  if (hours > 0) return hours + ' giờ ' + mins + ' phút';
+  return mins + ' phút';
+}
+
+function parseDateVN(str) {
+  if (!str) return null;
+  str = String(str);
+  var parts = str.split('/');
+  if (parts.length !== 3) return null;
+
+  var d = parseInt(parts[0], 10);
+  var m = parseInt(parts[1], 10) - 1;
+  var y = parseInt(parts[2], 10);
+
+  if (isNaN(d) || isNaN(m) || isNaN(y)) return null;
+  return new Date(y, m, d);
+}
+
+function parseDateTimeVN(dateStr, timeStr) {
+  var date = parseDateVN(dateStr);
+  if (!date) return null;
+
+  if (!timeStr) return date;
+
+  timeStr = String(timeStr);
+  var parts = timeStr.split(':');
+  if (parts.length < 2) return date;
+
+  var h = parseInt(parts[0], 10) || 0;
+  var m = parseInt(parts[1], 10) || 0;
+  var s = parseInt(parts[2] || '0', 10) || 0;
+
+  date.setHours(h, m, s, 0);
+  return date;
+}
+
+/**
+ * TÍNH LẠI CỘT I (THỜI GIAN ĐÃ Ở TRONG KHO) CHO TOÀN BỘ SHEET
+ */
+function recalcWarehouseTime(sheet, now) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  var numRows = lastRow - 1;
+  var data = sheet.getRange(2, 1, numRows, 10).getDisplayValues();
+
+  var hValues = [];
+  for (var i = 0; i < numRows; i++) hValues.push([data[i][8]]);
+
+  var openInMap = {};
+
+  for (var r = numRows - 1; r >= 0; r--) {
+    var row = data[r];
+    var dateStr = row[4];
+    var timeStr = row[5];
+    var io = row[3];
+    var item = row[1];
+    var nsxStr = row[6];
+    var hsdStr = row[7];
+
+    var eventTime = parseDateTimeVN(dateStr, timeStr);
+    if (!eventTime) continue;
+
+    var key = (item || '') + '|' + (nsxStr || '') + '|' + (hsdStr || '');
+    if (!key || key === '||') continue;
+
+    if (io === 'IN') {
+      openInMap[key] = { rowIndex: r, time: eventTime };
+    } else if (io === 'OUT') {
+      var rec = openInMap[key];
+      if (rec && rec.time) {
+        var diffSec = Math.floor((eventTime.getTime() - rec.time.getTime()) / 1000);
+        if (diffSec < 0) diffSec = 0;
+        var txt = formatDurationWarehouse(diffSec);
+
+        hValues[r][0] = txt;
+        hValues[rec.rowIndex][0] = txt;
+
+        delete openInMap[key];
+      }
+    }
+  }
+
+  for (var key2 in openInMap) {
+    if (!openInMap.hasOwnProperty(key2)) continue;
+    var rec2 = openInMap[key2];
+    var diffSec2 = Math.floor((now.getTime() - rec2.time.getTime()) / 1000);
+    if (diffSec2 < 0) diffSec2 = 0;
+    hValues[rec2.rowIndex][0] = formatDurationWarehouse(diffSec2);
+  }
+
+  sheet.getRange(2, 9, numRows, 1).setValues(hValues);
+}
+
+function computeExpireRemainingDays(hsdStr, now) {
+  var hsdDate = parseDateVN(hsdStr);
+  if (!hsdDate) return null;
+
+  var todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var hsdMidnight = new Date(hsdDate.getFullYear(), hsdDate.getMonth(), hsdDate.getDate());
+
+  var diffMs = hsdMidnight.getTime() - todayMidnight.getTime();
+  return Math.floor(diffMs / (1000 * 60 * 60 * 24));
+}
+
+function computeExpireRemainingText(hsdStr, now) {
+  var days = computeExpireRemainingDays(hsdStr, now);
+  if (days === null) return '';
+
+  if (days >= 14) return 'Còn lâu mới hết hạn';
+  if (days >= 7) return 'Còn ' + days + ' ngày';
+  if (days >= 1) return 'Còn ' + days + ' ngày (cần lưu ý)';
+  if (days === 0) return 'Hết hạn hôm nay';
+  return 'Đã quá hạn ' + Math.abs(days) + ' ngày';
+}
+
+function applyExpireColor(cell, diffDays) {
+  if (diffDays === null || diffDays === undefined) {
+    cell.setBackground(null);
+    return;
+  }
+
+  if (diffDays >= 14) cell.setBackground('#00B050'); // xanh
+  else if (diffDays >= 7) cell.setBackground('#FFC000'); // vàng
+  else cell.setBackground('#FF0000'); // đỏ
+}
+
+/* =========================================================
+ * TRIGGER TỰ CẬP NHẬT THỜI GIAN TRONG KHO
+ * =======================================================*/
+function autoUpdateWarehouseTime() {
+  var sheet_id = '1eU0HPzWhDaeF8UvmeHoQMh0lxxxX-ds1ir5rA1F6dus';
+  var sheet_names = [
+    'Tất cả',
+    'Phòng lạnh 1 (6-11 độ C)',
+    'Phòng lạnh 2 (12-17 độ C)',
+    'Phòng lạnh 3 (18-26 độ C)',
+    'An toàn',
+    'Cần lưu ý',
+    'Sắp/Đã hết hạn'
+  ];
+
+  var ss = SpreadsheetApp.openById(sheet_id);
+  var now = new Date();
+
+  sheet_names.forEach(function (name) {
+    var sheet = findSheetByNameLoose(ss, name);
+    if (sheet) recalcWarehouseTime(sheet, now);
+  });
+}
+
+// Tạo trigger an toàn: xoá trigger cũ rồi tạo 1 cái mới
+function deleteAutoUpdateTriggers() {
+  var triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(function (t) {
+    if (t.getHandlerFunction && t.getHandlerFunction() === 'autoUpdateWarehouseTime') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+}
+
+function createAutoUpdateTriggerSafe() {
+  deleteAutoUpdateTriggers();
+  ScriptApp.newTrigger('autoUpdateWarehouseTime')
+    .timeBased()
+    .everyMinutes(1)
+    .create();
+}
+
+/* =========================================================
+ * (MỚI) QUÉT LẠI TOÀN BỘ SHEET -> TỰ ĐIỀN CỘT "Phòng kho" (C)
+ * =======================================================*/
+/**
+ * Quét 1 sheet và tự điền cột C.
+ * force=false: chỉ điền khi cột C đang trống
+ * force=true : ghi đè lại toàn bộ cột C theo quy tắc
+ */
+function backfillGroupColumnInSheet_(sheet, force) {
+  if (!sheet) return;
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  var numRows = lastRow - 1;
+
+  // Lấy 2 cột: B (tên hàng), C (nhóm)
+  var rangeBC = sheet.getRange(2, 2, numRows, 2).getDisplayValues(); // [ [B,C], ... ]
+  var outC = [];
+
+  for (var i = 0; i < numRows; i++) {
+    var item = rangeBC[i][0]; // cột B
+    var grp = rangeBC[i][1]; // cột C
+
+    var newGrp = grp; // mặc định giữ nguyên
+
+    if (item) {
+      var cat = getCategoryInfoFromItem(item);
+      if (cat) {
+        // chỉ sửa khi force=true hoặc nhóm đang trống
+        if (force || !grp) newGrp = cat.displayName;
+      }
+    }
+
+    outC.push([newGrp]);
+  }
+
+  // Ghi lại cột C
+  sheet.getRange(2, 3, numRows, 1).setValues(outC);
+}
+
+/**
+ * Chạy cho TẤT CẢ các sheet trong file.
+ * - Mặc định: chỉ điền nhóm cho các dòng cũ bị trống cột C
+ * - Nếu muốn ghi đè: backfillGroupColumnAllSheets(true)
+ */
+function backfillGroupColumnAllSheets(force) {
+  force = !!force;
+
+  var sheet_id = '1eU0HPzWhDaeF8UvmeHoQMh0lxxxX-ds1ir5rA1F6dus';
+  var sheet_names = [
+    'Tất cả',
+    'Phòng lạnh 1 (6-11 độ C)',
+    'Phòng lạnh 2 (12-17 độ C)',
+    'Phòng lạnh 3 (18-26 độ C)',
+    'An toàn',
+    'Cần lưu ý',
+    'Sắp/Đã hết hạn'
+  ];
+
+  var ss = SpreadsheetApp.openById(sheet_id);
+
+  sheet_names.forEach(function (name) {
+    var sh = findSheetByNameLoose(ss, name);
+    if (sh) {
+      backfillGroupColumnInSheet_(sh, force);
+    }
+  });
+
+  Logger.log('Backfill group done. force=' + force);
+}
+
+/* =========================================================
+ * SHEET FINDER (LOOSE)
+ * =======================================================*/
+function normSheetName_(s) {
+  return String(s || '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*-\s*/g, '-');
+}
+
+function findSheetByNameLoose(ss, expectedName) {
+  var target = normSheetName_(expectedName);
+  var sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    if (normSheetName_(sheets[i].getName()) === target) return sheets[i];
+  }
+  return null;
+}
