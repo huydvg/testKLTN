@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="vi">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HỆ THỐNG GIÁM SÁT QUẢN LÝ PHÒNG KHO LẠNH</title>
+
+  <link rel="stylesheet" href="./WebDashboard_styles.css" />
+
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+
+</head>
+
+<body>
+  <div class="container">
+    <header>
+      <h1>HỆ THỐNG GIÁM SÁT QUẢN LÝ PHÒNG KHO LẠNH</h1>
+      <div class="pill hidden" id="hdrWrap" hidden>
+        <span id="hdrDot" class="dot"></span>
+        <span id="hdrSt">Đang khởi tạo…</span>
+      </div>
+    </header>
+
+    <div class="tabs">
+      <button id="tabRFIDBtn" class="tabbtn">📶 Quản lý hàng hóa</button>
+      <button id="tabRoomBtn" class="tabbtn">🌡️ Phòng lạnh</button>
+      <button id="tabReportBtn" class="tabbtn">📊 Google Sheet</button>
+    </div>
+
+    <!-- ===== RFID ===== -->
+    <section id="tabRFID" class="section">
+      <div class="card">
+        <div class="toolbar">
+          <span class="pill  hidden">Broker: <code id="rfidBroker" class="mono"></code></span>
+          <span class="pill hidden">Topic: <code id="rfidTopic" class="mono"></code></span>
+
+          <span class="pill">Tổng bản tin: <b id="rfidCnt">0</b></span>
+
+          <button id="btnRFIDClear">Xoá bảng</button>
+          <button id="btnRFIDClearScreen" title="Chỉ xoá phần hiển thị hiện tại, không xoá dữ liệu đã lưu">Xoá chỉ trên
+            màn hình</button>
+          <button id="btnRFIDRestore" class="primary" title="Vẽ lại từ dữ liệu đã lưu">Khôi phục hiển thị</button>
+          <button id="btnRFIDCSV" class="primary">Xuất CSV</button>
+
+          <input id="rfidSearch" placeholder="Tìm tên hàng" />
+        </div>
+
+        <div class="rfidStats" id="rfidStats">
+          <div class="rfidStat">
+            <div class="rfidStatLabel">Hàng đang trong kho</div>
+            <div class="rfidStatValue" id="rfidInStockCount">0</div>
+          </div>
+          <div class="rfidStat">
+            <div class="rfidStatLabel">An toàn (≥ 14 ngày)</div>
+            <div class="rfidStatValue" id="rfidSafeCount">0</div>
+          </div>
+          <div class="rfidStat">
+            <div class="rfidStatLabel">Cần theo dõi (7–13 ngày)</div>
+            <div class="rfidStatValue" id="rfidWatchCount">0</div>
+          </div>
+          <div class="rfidStat">
+            <div class="rfidStatLabel">Sắp / đã hết hạn (≤ 6 ngày)</div>
+            <div class="rfidStatValue" id="rfidDangerCount">0</div>
+          </div>
+          <div class="rfidStat">
+            <div class="rfidStatLabel">Lượt IN hôm nay</div>
+            <div class="rfidStatValue" id="rfidInToday">0</div>
+          </div>
+          <div class="rfidStat">
+            <div class="rfidStatLabel">Lượt OUT hôm nay</div>
+            <div class="rfidStatValue" id="rfidOutToday">0</div>
+          </div>
+
+          <div class="rfidStat">
+            <div class="rfidStatLabel">Phòng 1 trong kho</div>
+            <div class="rfidStatValue" id="rfidRoom1InStock">0</div>
+          </div>
+          <div class="rfidStat">
+            <div class="rfidStatLabel">Phòng 2 trong kho</div>
+            <div class="rfidStatValue" id="rfidRoom2InStock">0</div>
+          </div>
+          <div class="rfidStat">
+            <div class="rfidStatLabel">Phòng 3 trong kho</div>
+            <div class="rfidStatValue" id="rfidRoom3InStock">0</div>
+          </div>
+        </div>
+
+        <div class="filterRow">
+          <span style="font-size:16px;color:var(--muted)">Lọc HSD:</span>
+          <button type="button" class="filterChip active" data-hsd="all" id="hsdFilterAll">Tất cả</button>
+          <button type="button" class="filterChip" data-hsd="safe" id="hsdFilterSafe">An toàn</button>
+          <button type="button" class="filterChip" data-hsd="watch" id="hsdFilterWatch">Cần theo dõi</button>
+          <button type="button" class="filterChip" data-hsd="danger" id="hsdFilterDanger">Sắp / đã hết hạn</button>
+          <span class="filterSwitch">
+            <input type="checkbox" id="onlyInStock">
+            <label for="onlyInStock">Chỉ hiển thị hàng đang trong kho</label>
+          </span>
+        </div>
+
+        <div class="filterRow">
+          <span style="font-size:16px;color:var(--muted)">Phòng:</span>
+          <button type="button" class="filterChip active" data-room="all" id="roomFilterAll">Tất cả</button>
+          <button type="button" class="filterChip" data-room="room1" id="roomFilter1">Phòng 1</button>
+          <button type="button" class="filterChip" data-room="room2" id="roomFilter2">Phòng 2</button>
+          <button type="button" class="filterChip" data-room="room3" id="roomFilter3">Phòng 3</button>
+        </div>
+
+        <div class="tabs" style="padding:0 12px 8px 12px;border-bottom:1px solid var(--border);margin-top:0">
+          <button id="rfidSubTodayBtn" class="tabbtn small">Hôm nay</button>
+          <button id="rfidSubHistoryBtn" class="tabbtn small">Lịch sử</button>
+        </div>
+
+        <div id="rfidPaneToday" class="rfidPane">
+          <table aria-label="Bảng RFID hôm nay">
+            <thead>
+              <tr>
+                <th style="width:6%">STT</th>
+                <th style="width:18%">Tên hàng hóa</th>
+                <th style="width:10%">Phòng</th>
+                <th style="width:10%">Nhiệt độ bảo quản</th>
+                <th style="width:10%">Trạng thái nhập xuất</th>
+                <th style="width:12%">Ngày/tháng/năm</th>
+                <th style="width:10%">Thời gian</th>
+                <th style="width:12%">Ngày sản xuất</th>
+                <th style="width:12%">Hạn sử dụng</th>
+                <th class="stayCol">Thời gian đã ở trong kho</th>
+                <th class="expireCol">Thời gian sắp quá hạn</th>
+              </tr>
+            </thead>
+            <tbody id="rfidTbodyToday"></tbody>
+          </table>
+        </div>
+
+        <div id="rfidPaneHistory" class="rfidPane">
+          <div style="padding:10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span>Chọn ngày:</span>
+            <select id="rfidHistoryDaySel">
+              <option value="">(Chưa có lịch sử)</option>
+            </select>
+          </div>
+          <table aria-label="Bảng RFID lịch sử">
+            <thead>
+              <tr>
+                <th style="width:6%">STT</th>
+                <th style="width:18%">Tên hàng hóa</th>
+                <th style="width:10%">Phòng</th>
+                <th style="width:10%">Nhiệt độ bảo quản</th>
+                <th style="width:10%">Trạng thái nhập xuất</th>
+                <th style="width:12%">Ngày/tháng/năm</th>
+                <th style="width:10%">Thời gian</th>
+                <th style="width:12%">Ngày sản xuất</th>
+                <th style="width:12%">Hạn sử dụng</th>
+                <th class="stayCol">Thời gian đã ở trong kho</th>
+                <th class="expireCol">Thời gian sắp quá hạn</th>
+              </tr>
+            </thead>
+            <tbody id="rfidTbodyHistory"></tbody>
+          </table>
+        </div>
+
+        <div class="footer hidden">
+          <small>Giữ tối đa <span class="mono" id="rfidMax">200</span> dòng (mới nhất ở trên).</small>
+          <small class="mono hidden">MQTT 3.1.1 / WebSocket TLS</small>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== ROOM ===== -->
+    <section id="tabRoom" class="section">
+      <div class="card">
+        <div class="toolbar" style="justify-content:space-between">
+          <div class="controls hidden">
+            <span class="pill">Broker: <code id="roomBroker" class="mono"></code></span>
+            <span class="pill">Sub: <code id="roomSub" class="mono"></code></span>
+            <span class="pill">State: <code id="roomState" class="mono"></code></span>
+            <span class="pill">Pub: <code id="roomPub" class="mono"></code></span>
+          </div>
+
+          <div class="controls">
+            <div class="roomtabs">
+              <span>Phòng:</span>
+              <button class="roombtn active" data-room="room1">Phòng 1</button>
+              <button class="roombtn" data-room="room2">Phòng 2</button>
+              <button class="roombtn" data-room="room3">Phòng 3</button>
+            </div>
+
+            <button id="btnAllRooms" type="button" class="tagbtn"
+              title="Hiển thị nhiệt độ/độ ẩm của cả 3 phòng cùng lúc">
+              🧊 Hiển thị 3 phòng
+            </button>
+
+            <button id="btnOpenTHLog" class="tabbtn small">📋 Bảng ghi nhiệt độ/độ ẩm</button>
+
+            <div id="doorBadge" class="badge" title="Trạng thái cửa">
+              <span class="dot"></span><span id="doorText">Door: —</span>
+            </div>
+
+            <div class="toggleRow"
+              title="OFF: tắt toàn bộ hệ thống phòng này (relay, oled, dht, cửa, peltier...). Web cũng khoá điều khiển của phòng đó.">
+              <span class="toggleLabel">Bật hệ thống</span>
+
+              <label class="toggle">
+                <input type="checkbox" id="roomSysEnable">
+                <span class="track"></span>
+                <span class="thumb"></span>
+              </label>
+            </div>
+
+            <div class="toggleRow"
+              title="Tắt -> Web ẩn cảnh báo + gửi lệnh xuống ESP32 để tắt còi/báo động phần cứng (theo phòng)">
+              <span class="toggleLabel">Cảnh báo</span>
+
+              <label class="toggle">
+                <input type="checkbox" id="alarmEnableWeb">
+                <span class="track"></span>
+                <span class="thumb"></span>
+              </label>
+            </div>
+
+
+            <div id="alarmBadge" class="badge hidden" title="Cảnh báo nhiệt độ">
+              <span id="alarmDot" class="dot"></span><span id="alarmText">ALARM: —</span>
+            </div>
+            <div id="alarmLED" class="led hidden" title="Nhiệt độ vượt ngưỡng" aria-label="Alarm"></div>
+          </div>
+        </div>
+
+        <!-- hiển thị 3 phòng -->
+        <div id="allRoomsWrap" class="allRoomsWrap hidden">
+          <div class="allRoomsGrid">
+            <div class="roomMiniCard" id="mini_room1">
+              <div class="roomMiniTitle">
+                <span>Phòng 1</span>
+                <span class="roomMiniMeta" id="mini_room1_meta">—</span>
+              </div>
+              <div class="roomMiniVals">
+                <div class="roomMiniValBox">
+                  <div class="roomMiniValLabel">Nhiệt độ</div>
+                  <div class="roomMiniVal"><span id="mini_room1_t">--.-</span> <span class="roomMiniValUnit">°C</span>
+                  </div>
+                </div>
+                <div class="roomMiniValBox">
+                  <div class="roomMiniValLabel">Độ ẩm</div>
+                  <div class="roomMiniVal"><span id="mini_room1_h">--.-</span> <span class="roomMiniValUnit">%RH</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="roomMiniCard" id="mini_room2">
+              <div class="roomMiniTitle">
+                <span>Phòng 2</span>
+                <span class="roomMiniMeta" id="mini_room2_meta">—</span>
+              </div>
+              <div class="roomMiniVals">
+                <div class="roomMiniValBox">
+                  <div class="roomMiniValLabel">Nhiệt độ</div>
+                  <div class="roomMiniVal"><span id="mini_room2_t">--.-</span> <span class="roomMiniValUnit">°C</span>
+                  </div>
+                </div>
+                <div class="roomMiniValBox">
+                  <div class="roomMiniValLabel">Độ ẩm</div>
+                  <div class="roomMiniVal"><span id="mini_room2_h">--.-</span> <span class="roomMiniValUnit">%RH</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="roomMiniCard" id="mini_room3">
+              <div class="roomMiniTitle">
+                <span>Phòng 3</span>
+                <span class="roomMiniMeta" id="mini_room3_meta">—</span>
+              </div>
+              <div class="roomMiniVals">
+                <div class="roomMiniValBox">
+                  <div class="roomMiniValLabel">Nhiệt độ</div>
+                  <div class="roomMiniVal"><span id="mini_room3_t">--.-</span> <span class="roomMiniValUnit">°C</span>
+                  </div>
+                </div>
+                <div class="roomMiniValBox">
+                  <div class="roomMiniValLabel">Độ ẩm</div>
+                  <div class="roomMiniVal"><span id="mini_room3_h">--.-</span> <span class="roomMiniValUnit">%RH</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid hidden" id="relayGrid"></div>
+
+        <div class="peltierBar">
+          <span class="pill hidden">Peltier CMD: <code class="mono" id="pelCmdTopic"></code></span>
+          <span class="pill hidden">State: <code class="mono" id="pelStateTopic"></code></span>
+          <span class="pill hidden">Tele: <code class="mono" id="pelTeleTopic"></code></span>
+
+          <label class="pill" title="Bật/tắt đầu ra BTS7960">
+            <input type="checkbox" id="peltierEnable">
+            Enable
+          </label>
+
+          <div class="controls">
+            <button id="modeAuto" class="modebtn" type="button">Chế độ tự động</button>
+            <button id="modeManual" class="modebtn" type="button">Chế độ thủ công</button>
+            <button id="modeOff" class="modebtn danger" type="button">TẮT</button>
+          </div>
+
+          <input id="peltierSlider" class="range" type="range" min="0" max="255" step="1" value="0"
+            title="Duty 0..255 (manual)" />
+
+          <span class="pill hidden">Duty: <b id="pelDutyLbl">0</b>/255 (<b id="pelPctLbl">0</b>%)</span>
+          <span class="pill hidden">Mode: <b id="pelModeLbl">—</b></span>
+
+          <span class="pill" title="AUTO: tăng duty khi nhiệt độ > setpoint, giảm duty khi gần setpoint để ổn định">
+            <span class="bandTag">Ngưỡng nhiệt độ tự động:</span>
+            <span class="autoWrap">
+              <label class="mono"> <input id="autoSetpoint" type="number" step="0.1"></label>
+              <label class="mono hidden">Boost <input id="autoBoostBand" type="number" step="0.1"></label>
+              <label class="mono hidden">Hys <input id="autoHys" type="number" step="0.1"></label>
+              <label class="mono hidden">Min <input id="autoMinDuty" type="number" step="1" min="0" max="255"></label>
+              <label class="mono hidden">Max <input id="autoMaxDuty" type="number" step="1" min="0" max="255"></label>
+              <button id="autoApplyBtn" type="button" class="tabbtn small">Áp dụng chế độ tự động</button>
+              <span class="autoHint hidden" id="autoExplain">—</span>
+            </span>
+          </span>
+
+          <span class="pill"
+            title="Chỉ cần nhập LOW/HIGH. Hệ thống tự tạo dải ALARM (±0.5) và CLEAR (±0.5) để tránh nhấp nháy.">
+            <span class="bandTag">Ngưỡng cảnh báo:</span>
+            <span class="bandWrap">
+              <label class="mono">Thấp <input id="rangeLowInput" type="number" step="0.1"></label>
+              <label class="mono">Cao <input id="rangeHighInput" type="number" step="0.1"></label>
+              <span class="pill" style="padding:6px 10px">Khoảng chênh lệch: <b>0.5°C</b></span>
+              <button id="bandSaveBtn" type="button" class="tabbtn small">Lưu</button>
+              <button id="bandDefaultBtn" type="button" class="tabbtn small">Mặc định phòng</button>
+              <span class="pill hidden" style="padding:6px 10px" id="bandExplain">—</span>
+            </span>
+          </span>
+        </div>
+
+        <div class="stats">
+          <div class="stat" aria-label="Nhiệt độ">
+            <div class="statLabel">Nhiệt độ</div>
+            <div class="statValue"><span id="tempBig">--.-</span></div>
+            <div class="statUnit">°C</div>
+          </div>
+          <div class="stat" aria-label="Độ ẩm">
+            <div class="statLabel">Độ ẩm</div>
+            <div class="statValue"><span id="humiBig">--.-</span></div>
+            <div class="statUnit">%RH</div>
+          </div>
+        </div>
+
+        <div class="toolbar" style="justify-content:flex-start;gap:8px;border-top:1px solid var(--border)">
+          <span class="pill hidden">
+            History points:
+            <input id="histMax" type="number" value="1000" style="width:110px" disabled>
+          </span>
+
+          <span class="pill hidden">
+            Khoảng hiển thị:
+            <span class="mono"><b>24 giờ</b></span>
+          </span>
+
+          <!-- Bộ lọc markers -->
+          <label class="pill" title="Marker cửa OPEN/CLOSED trên biểu đồ (bật sẵn)">
+            <input type="checkbox" id="chkDoorMarkers" checked>
+            Cửa
+          </label>
+
+          <label class="pill" title="Marker ALARM ON trên biểu đồ (bật sẵn)">
+            <input type="checkbox" id="chkAlarmOnMarkers" checked>
+            Cảnh báo bật
+          </label>
+
+          <label class="pill" title="Marker ALARM OFF/CLEAR trên biểu đồ (bật sẵn)">
+            <input type="checkbox" id="chkAlarmOffMarkers" checked>
+            Cảnh báo tắt
+          </label>
+
+          <button id="histClear">Xoá biểu đồ</button>
+        </div>
+
+        <div style="padding:12px;height:260px">
+          <canvas id="thChart"></canvas>
+        </div>
+        <table aria-label="Bảng nhiệt độ và độ ẩm" style="margin-top:14px" class="hidden">
+          <thead>
+            <tr>
+              <th>Nhiệt độ (°C)</th>
+              <th>Độ ẩm (%RH)</th>
+            </tr>
+          </thead>
+          <tbody id="roomTbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- ===== MODAL: Bảng ghi T/H (theo từng phòng) ===== -->
+  <div id="thModalOverlay" class="modalOverlay" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Bảng ghi nhiệt độ và độ ẩm">
+      <div class="modalHeader">
+        <div class="modalTitle">📋 Bảng ghi nhiệt độ & độ ẩm</div>
+        <button class="modalClose" id="btnCloseTHModal">Đóng ✕</button>
+      </div>
+
+      <div class="modalTools">
+        <span class="pill">Tổng dòng: <b id="thLogCount">0</b></span>
+        <span class="pill">Phòng: <b id="thLogRoomLbl">room1</b></span>
+
+        <span class="miniSwitch pill">
+          <input type="checkbox" id="thLogEnable">
+          <label for="thLogEnable">Bật ghi log</label>
+        </span>
+
+        <span class="pill">Giới hạn:
+          <input id="thLogLimit" type="number" min="100" max="10000" value="2000" style="width:90px">
+        </span>
+
+        <input id="thLogSearch" placeholder="Tìm theo thời gian" style="min-width:240px">
+
+        <button id="btnTHExportCSV" class="primary">Xuất CSV</button>
+        <button id="btnTHClear" class="danger">Xoá log</button>
+      </div>
+
+      <div class="modalBody">
+        <table class="tableMini" aria-label="Bảng log T/H">
+          <thead>
+            <tr>
+              <th style="width:22%">Thời gian</th>
+              <th style="width:10%">Phòng</th>
+              <th style="width:12%">Nhiệt độ (°C)</th>
+              <th style="width:12%">Độ ẩm (%RH)</th>
+              <th style="width:10%">Cửa</th>
+              <th style="width:14%">Cảnh báo</th>
+              <th>Ghi chú</th>
+            </tr>
+          </thead>
+          <tbody id="thLogTbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <script src="./WebDashboard_app.js"></script>
+</body>
+
+</html>
